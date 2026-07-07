@@ -11,26 +11,57 @@ function signToken(userId: string) {
 }
 
 authRouter.post('/social', async (req: Request, res: Response) => {
-  const { provider, token } = req.body;
+  const { provider, token, guestData } = req.body;
   if (!provider || !token) {
     return res.status(400).json({ error: 'Missing provider or token' });
   }
   try {
     const profile = await socialAuthManager.verify(provider, token);
     let user = userStore.findByEmailOnly(profile.email);
-    if (user) {
-      userStore.updateUser(user.id, {
-        name: profile.name,
-        avatar: profile.avatar,
-      });
+
+    // If this was a guest upgrade, merge guest progress into the real account
+    if (guestData && guestData.isGuest) {
+      if (user) {
+        // Existing account — merge guest chips/elo/stats (take the higher values)
+        userStore.updateUser(user.id, {
+          chips: Math.max(user.chips, guestData.chips ?? 0),
+          elo: Math.max(user.elo, guestData.elo ?? 800),
+          highestElo: Math.max(user.highestElo, guestData.highestElo ?? 800),
+          wins: user.wins + (guestData.wins ?? 0),
+          gamesPlayed: user.gamesPlayed + (guestData.gamesPlayed ?? 0),
+          xp: user.xp + (guestData.xp ?? 0),
+          lifetimeEarned: user.lifetimeEarned + (guestData.lifetimeEarned ?? 0),
+          lifetimeSpent: user.lifetimeSpent + (guestData.lifetimeSpent ?? 0),
+        });
+      } else {
+        // New account — carry guest progress forward
+        user = userStore.createSocialUser(profile, guestData);
+      }
     } else {
-      user = userStore.createSocialUser(profile);
+      if (!user) {
+        user = userStore.createSocialUser(profile);
+      } else {
+        userStore.updateUser(user.id, {
+          name: profile.name,
+          avatar: profile.avatar,
+        });
+      }
     }
-    const jwt = signToken(user.id);
-    res.json({ token: jwt, user: sanitize(user) });
+
+    const jwt = signToken(user!.id);
+    res.json({ token: jwt, user: sanitize(user!) });
   } catch (err: any) {
-    console.error('Social auth error:', err);
-    res.status(401).json({ error: err.message || 'Social authentication failed' });
+    const details = {
+      message: err.message,
+      code: err.code,
+      stack: err.stack?.split('\n').slice(0, 3).join('\n'),
+    };
+    console.error(`[Auth] POST /social failed — ${provider}`, details);
+    const statusCode = err.code === 'app/no-app' ? 500 : 401;
+    res.status(statusCode).json({
+      error: err.message || 'Social authentication failed',
+      code: err.code || undefined,
+    });
   }
 });
 

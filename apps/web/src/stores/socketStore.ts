@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { io, Socket } from 'socket.io-client';
+import { useAuthStore } from './authStore';
 
 interface SocketStore {
   socket: Socket | null;
@@ -46,6 +47,30 @@ export const useSocketStore = create<SocketStore>((set, get) => ({
 
     socket.on('connect', () => {
       set({ connected: true, connectError: null, authToken: token });
+      // Sync guest progress to server after reconnection
+      const authUser = useAuthStore.getState().user;
+      if (authUser?.isGuest && authUser.id) {
+        socket.emit('guest:sync', {
+          id: authUser.id,
+          name: authUser.name,
+          email: authUser.email,
+          avatar: authUser.avatar,
+          elo: authUser.elo,
+          highestElo: authUser.highestElo,
+          level: authUser.level,
+          xp: authUser.xp,
+          wins: authUser.wins,
+          losses: authUser.losses,
+          gamesPlayed: authUser.gamesPlayed,
+          rankedWins: authUser.rankedWins,
+          rankedLosses: authUser.rankedLosses,
+          rankedGames: authUser.rankedGames,
+          chips: authUser.chips,
+          lifetimeEarned: authUser.lifetimeEarned,
+          lifetimeSpent: authUser.lifetimeSpent,
+          achievements: authUser.achievements,
+        });
+      }
     });
 
     socket.on('auth:success', (data: any) => {

@@ -141,15 +141,27 @@ export function dealMendicot(state: MendicotState): MendicotState {
 
 export function playMendicotCard(state: MendicotState, playerId: string, card: Card): MendicotState {
   const playerIdx = state.players.findIndex(p => p.id === playerId);
-  if (playerIdx === -1 || playerIdx !== state.currentPlayerIndex) return state;
+  if (playerIdx === -1 || playerIdx !== state.currentPlayerIndex) {
+    console.log(`[M] REJECT: wrong turn — playerIdx=${playerIdx}, currentPlayerIndex=${state.currentPlayerIndex}, playerId=${playerId}`);
+    return state;
+  }
 
   const player = state.players[playerIdx];
-  if (!player.cards.find(c => c.id === card.id)) return state;
+  const foundCard = player.cards.find(c => c.id === card.id);
+  if (!foundCard) {
+    console.log(`[M] REJECT: card ${card.rank} of ${card.suit} (id=${card.id}) not in player ${player.name}'s hand`);
+    return state;
+  }
 
-  // ── Enforce legal move: reject illegal plays silently ────────
+  // ── Enforce legal move: reject illegal plays ────────────
   const legalCards = getLegalMendicotCards(player, state.currentTrick, state.trumpSuit);
   const isLegal = legalCards.some(c => c.id === card.id);
-  if (!isLegal) return state;
+  if (!isLegal) {
+    console.log(`[M] REJECT: ${player.name} played illegal card ${card.rank} of ${card.suit} (legal: [${legalCards.map(c => c.rank + ' ' + c.suit).join(', ')}])`);
+    return state;
+  }
+
+  console.log(`[M] PLAY: ${player.name} played ${card.rank} of ${card.suit} (id=${card.id}) — trick slot ${state.currentTrick.cards.length + 1}/4`);
 
   let newTrumpSuit = state.trumpSuit;
   let newTrumpRevealed = state.trumpRevealed;
@@ -224,6 +236,8 @@ function resolveMendicotTrick(state: MendicotState): MendicotState {
   const winnerId = winnerEntry.playerId;
   const winner = state.players.find(p => p.id === winnerId)!;
   const winnerTeam = winner.teamId;
+
+  console.log(`[M] TRICK RESOLVED: winner=${winner.name} (team ${winnerTeam})`);
 
   // Count tens captured in this trick
   const tensInTrick = trick.cards.filter(entry => TEN_IDS.has(entry.card.id)).length;

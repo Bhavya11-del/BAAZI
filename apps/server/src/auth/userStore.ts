@@ -140,17 +140,26 @@ class UserStore {
     return this.users.get(id);
   }
 
-  createSocialUser(profile: SocialProfile): User {
+  createSocialUser(profile: SocialProfile, guestData?: any): User {
     const id = uuidv4();
     const user: User = {
       id, email: profile.email, name: profile.name, passwordHash: '',
       avatar: profile.avatar,
-      elo: STARTING_ELO, highestElo: STARTING_ELO,
-      level: 1, xp: 0,
-      wins: 0, losses: 0, gamesPlayed: 0,
-      rankedWins: 0, rankedLosses: 0, rankedGames: 0,
-      chips: 1000, lifetimeEarned: 0, lifetimeSpent: 0,
-      achievements: [], friends: [],
+      elo: guestData?.elo ?? STARTING_ELO,
+      highestElo: guestData?.highestElo ?? STARTING_ELO,
+      level: guestData?.level ?? 1,
+      xp: guestData?.xp ?? 0,
+      wins: guestData?.wins ?? 0,
+      losses: 0,
+      gamesPlayed: guestData?.gamesPlayed ?? 0,
+      rankedWins: guestData?.rankedWins ?? 0,
+      rankedLosses: 0,
+      rankedGames: guestData?.rankedGames ?? 0,
+      chips: Math.max(guestData?.chips ?? 0, 1000),
+      lifetimeEarned: guestData?.lifetimeEarned ?? 0,
+      lifetimeSpent: guestData?.lifetimeSpent ?? 0,
+      achievements: guestData?.achievements ?? [],
+      friends: [],
       createdAt: new Date().toISOString(),
       isGuest: false,
     };
@@ -166,6 +175,42 @@ class UserStore {
   updateUser(id: string, updates: Partial<User>) {
     const user = this.users.get(id);
     if (user) this.users.set(id, { ...user, ...updates });
+  }
+
+  updateGuestProgress(id: string, data: Partial<User>): boolean {
+    const existing = this.users.get(id);
+    if (existing && existing.isGuest) {
+      this.users.set(id, { ...existing, ...data, id }); // keep original id
+      return true;
+    }
+    if (!existing) {
+      const guest: User = {
+        id, isGuest: true,
+        email: data.email || `guest@guest.local`,
+        name: data.name || 'Guest',
+        passwordHash: '',
+        avatar: data.avatar || '',
+        elo: data.elo ?? 800,
+        highestElo: data.highestElo ?? 800,
+        level: data.level ?? 1,
+        xp: data.xp ?? 0,
+        wins: data.wins ?? 0,
+        losses: data.losses ?? 0,
+        gamesPlayed: data.gamesPlayed ?? 0,
+        rankedWins: data.rankedWins ?? 0,
+        rankedLosses: data.rankedLosses ?? 0,
+        rankedGames: data.rankedGames ?? 0,
+        chips: data.chips ?? 500,
+        lifetimeEarned: data.lifetimeEarned ?? 0,
+        lifetimeSpent: data.lifetimeSpent ?? 0,
+        achievements: data.achievements ?? [],
+        friends: [],
+        createdAt: new Date().toISOString(),
+      };
+      this.users.set(id, guest);
+      return true;
+    }
+    return false;
   }
 
   addXP(userId: string, xp: number) {

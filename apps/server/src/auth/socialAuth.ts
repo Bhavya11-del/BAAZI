@@ -1,3 +1,6 @@
+import { getApps } from 'firebase-admin';
+import { getAuth } from 'firebase-admin/auth';
+
 export interface SocialProfile {
   provider: string;
   providerId: string;
@@ -10,25 +13,21 @@ interface SocialAuthProvider {
   verify(token: string): Promise<SocialProfile>;
 }
 
-class GoogleProvider implements SocialAuthProvider {
+class FirebaseProvider implements SocialAuthProvider {
   async verify(token: string): Promise<SocialProfile> {
-    const response = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    if (!response.ok) {
-      const errorText = await response.text().catch(() => 'Unknown error');
-      throw new Error(`Google token verification failed: ${errorText}`);
+    if (!getApps().length) {
+      throw Object.assign(new Error('Firebase Admin is not initialized. Set FIREBASE_PROJECT_ID in apps/server/.env and configure credentials.'), { code: 'app/no-app' });
     }
-    const data: Record<string, any> = await response.json();
-    if (!data.email) {
-      throw new Error('Google account has no email');
+    const decoded = await getAuth().verifyIdToken(token);
+    if (!decoded.email) {
+      throw new Error('Firebase account has no email');
     }
     return {
-      provider: 'google',
-      providerId: data.sub as string,
-      email: data.email as string,
-      name: (data.name as string) || (data.email as string).split('@')[0],
-      avatar: (data.picture as string) || `https://api.dicebear.com/7.x/avataaars/svg?seed=${data.email}`,
+      provider: 'firebase',
+      providerId: decoded.uid,
+      email: decoded.email,
+      name: decoded.name || decoded.email!.split('@')[0],
+      avatar: decoded.picture || `https://api.dicebear.com/7.x/avataaars/svg?seed=${decoded.email}`,
     };
   }
 }
@@ -51,4 +50,4 @@ class SocialAuthManager {
 
 export const socialAuthManager = new SocialAuthManager();
 
-socialAuthManager.register('google', new GoogleProvider());
+socialAuthManager.register('firebase', new FirebaseProvider());

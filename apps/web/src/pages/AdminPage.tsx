@@ -9,24 +9,30 @@ export default function AdminPage() {
   const { user } = useAuthStore();
   const navigate = useNavigate();
   const [stats, setStats] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     if (!user) {
       navigate('/');
       return;
     }
-    setStats({
-      totalUsers: 48291,
-      activeGames: 342,
-      onlineNow: 1245,
-      revenue: '₹ 0 (Free to Play)',
-      recentReports: [
-        { id: 1, user: 'BadBot99', reason: 'Spamming emotes', status: 'Pending' },
-        { id: 2, user: 'AngryGamer', reason: 'Abusive chat', status: 'Reviewed' }
-      ]
+    Promise.all([
+      axios.get('http://localhost:3001/api/auth/stats').catch(() => null),
+      axios.get('http://localhost:3001/api/leaderboard').catch(() => null),
+    ]).then(([statsRes, lbRes]) => {
+      const serverStats = statsRes?.data || {};
+      const totalUsers = serverStats.totalUsers ?? (lbRes?.data?.length ?? '-');
+      setStats({
+        totalUsers,
+        activeGames: serverStats.activeGames ?? '-',
+        onlineNow: serverStats.onlineNow ?? '-',
+        revenue: 'Free to Play',
+      });
+      setLoading(false);
     });
   }, [user, navigate]);
 
+  if (loading) return <div className="min-h-screen pt-20 text-center text-white/50">Loading admin data...</div>;
   if (!stats) return null;
 
   return (
@@ -56,38 +62,8 @@ export default function AdminPage() {
 
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           <div className="lg:col-span-2 glass-panel p-6">
-            <h2 className="font-cinzel text-lg font-bold text-white mb-4">Moderation Queue</h2>
-            <div className="overflow-x-auto">
-              <table className="w-full text-left text-sm">
-                <thead>
-                  <tr className="text-white/40 border-b border-white/10">
-                    <th className="pb-2 font-medium">Report ID</th>
-                    <th className="pb-2 font-medium">Reported User</th>
-                    <th className="pb-2 font-medium">Reason</th>
-                    <th className="pb-2 font-medium">Status</th>
-                    <th className="pb-2 font-medium text-right">Action</th>
-                  </tr>
-                </thead>
-                <tbody className="text-white/80">
-                  {stats.recentReports.map((r: any) => (
-                    <tr key={r.id} className="border-b border-white/5 last:border-0 hover:bg-white/5">
-                      <td className="py-3">#{r.id}</td>
-                      <td className="py-3 text-gold">{r.user}</td>
-                      <td className="py-3">{r.reason}</td>
-                      <td className="py-3">
-                        <span className={`px-2 py-1 rounded text-xs ${r.status === 'Pending' ? 'bg-amber-500/20 text-amber-400' : 'bg-green-500/20 text-green-400'}`}>
-                          {r.status}
-                        </span>
-                      </td>
-                      <td className="py-3 text-right">
-                        <button onClick={() => toast.success(`User ${r.user} banned!`)} className="btn-danger !px-3 !py-1 !text-xs mr-2">Ban</button>
-                        <button onClick={() => toast.success(`Report #${r.id} dismissed.`)} className="btn-ghost !px-3 !py-1 !text-xs">Dismiss</button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+            <h2 className="font-cinzel text-lg font-bold text-white mb-4">Server Metrics</h2>
+            <p className="text-white/40 text-sm">Real-time server statistics will appear here once monitoring endpoints are implemented.</p>
           </div>
 
           <div className="glass-panel p-6">

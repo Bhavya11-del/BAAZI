@@ -41,8 +41,8 @@ export default function Navbar() {
                 <img src={user.avatar} className="w-7 h-7 rounded-full" alt="" />
                 <div className="hidden sm:block">
                   <div className="text-white text-xs font-semibold leading-none">{user.name}</div>
-                  <div className="text-gold text-xs">Lv.{user.level} · {user.elo} ELO</div>
-                  <div className="text-yellow-400 text-[10px]">👑 {user.chips ?? 0} Chips</div>
+                  <div className="text-gold text-xs">Lv.{user.level ?? '-'} · {user.elo != null ? `${user.elo} ELO` : '- ELO'}</div>
+                  <div className="text-yellow-400 text-[10px]">👑 {user.chips != null ? `${user.chips} Chips` : '- Chips'}</div>
                 </div>
               </Link>
               <button onClick={handleLogout} className="btn-ghost !px-3 !py-2">

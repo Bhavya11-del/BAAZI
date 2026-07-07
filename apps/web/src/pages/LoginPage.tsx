@@ -1,14 +1,19 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import { useNavigate, Link } from 'react-router-dom';
 import { useAuthStore } from '../stores/authStore';
 import { Crown, Mail, Lock, User, Eye, EyeOff } from 'lucide-react';
 import toast from 'react-hot-toast';
-import GoogleSignIn, { isGoogleConfigured } from '../components/GoogleSignIn';
+import GoogleSignIn, { isFirebaseConfigured } from '../components/GoogleSignIn';
 
 export default function LoginPage() {
   const navigate = useNavigate();
-  const { login, register, loginAsGuest, loading } = useAuthStore();
+  const { user, login, register, loginAsGuest, loading } = useAuthStore();
+
+  // If already authenticated, redirect to home
+  useEffect(() => {
+    if (user) navigate('/', { replace: true });
+  }, [user, navigate]);
   const [mode, setMode] = useState<'login' | 'register'>('login');
   const [showPwd, setShowPwd] = useState(false);
   const [form, setForm] = useState({ email: '', name: '', password: '' });
@@ -112,7 +117,7 @@ export default function LoginPage() {
             </button>
           </form>
 
-          {isGoogleConfigured() && (
+          {isFirebaseConfigured && (
             <>
               <div className="relative my-5">
                 <div className="absolute inset-0 flex items-center">

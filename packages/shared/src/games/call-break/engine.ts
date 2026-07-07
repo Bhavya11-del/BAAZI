@@ -37,6 +37,8 @@ export interface CallBreakState {
   totalRounds: number;
   biddingPlayerIndex: number;
   lastAction?: string;
+  /** IDs of cards the current player is legally allowed to play */
+  legalCardIds?: string[];
 }
 
 export function initCallBreak(players: Omit<CallBreakPlayer, 'cards' | 'bid' | 'tricksWon' | 'score' | 'totalScore'>[], totalRounds = 5): CallBreakState {
@@ -50,6 +52,7 @@ export function initCallBreak(players: Omit<CallBreakPlayer, 'cards' | 'bid' | '
     currentRound: 1,
     totalRounds,
     biddingPlayerIndex: 0,
+    legalCardIds: [],
   };
 }
 
@@ -73,6 +76,7 @@ export function dealCallBreak(state: CallBreakState): CallBreakState {
     currentTrick: { cards: [], leadSuit: null },
     completedTricks: [],
     biddingPlayerIndex: (state.dealerIndex + 1) % 4,
+    legalCardIds: [],
   };
 }
 
@@ -91,22 +95,35 @@ export function placeBid(state: CallBreakState, playerId: string, bid: number): 
     phase: allBid ? 'TRICK_PLAY' : 'BIDDING',
     currentPlayerIndex: allBid ? (state.dealerIndex + 1) % 4 : state.biddingPlayerIndex,
     lastAction: `${players.find(p => p.id === playerId)?.name} bid ${bid}`,
+    legalCardIds: allBid ? players[(state.dealerIndex + 1) % 4].cards.map(c => c.id) : [],
   };
 }
 
 export function playCard(state: CallBreakState, playerId: string, card: Card): CallBreakState {
   const playerIdx = state.players.findIndex(p => p.id === playerId);
-  if (playerIdx === -1 || playerIdx !== state.currentPlayerIndex) return state;
+  if (playerIdx === -1 || playerIdx !== state.currentPlayerIndex) {
+    console.log(`[CB] REJECT: wrong turn — playerIdx=${playerIdx}, currentPlayerIndex=${state.currentPlayerIndex}, playerId=${playerId}`);
+    return state;
+  }
 
   const player = state.players[playerIdx];
-  if (!player.cards.find(c => c.id === card.id)) return state;
+  const foundCard = player.cards.find(c => c.id === card.id);
+  if (!foundCard) {
+    console.log(`[CB] REJECT: card ${card.rank} of ${card.suit} (id=${card.id}) not in player ${player.name}'s hand`);
+    return state;
+  }
 
   // Validate: must follow suit if possible
   const leadSuit = state.currentTrick.leadSuit;
   if (leadSuit && card.suit !== leadSuit && card.suit !== TRUMP_SUIT) {
     const hasSuit = player.cards.some(c => c.suit === leadSuit);
-    if (hasSuit) return state; // Invalid move
+    if (hasSuit) {
+      console.log(`[CB] REJECT: ${player.name} must follow ${leadSuit} but played ${card.suit}`);
+      return state;
+    }
   }
+
+  console.log(`[CB] PLAY: ${player.name} played ${card.rank} of ${card.suit} (id=${card.id}) — trick slot ${state.currentTrick.cards.length + 1}/4`);
 
   const newTrickCards = [...state.currentTrick.cards, { playerId, card }];
   const newLeadSuit = state.currentTrick.leadSuit || card.suit;
@@ -114,19 +131,28 @@ export function playCard(state: CallBreakState, playerId: string, card: Card): C
     i === playerIdx ? { ...p, cards: p.cards.filter(c => c.id !== card.id) } : p
   );
 
-  const newState: CallBreakState = {
+  if (newTrickCards.length === 4) {
+    return resolveTrick({
+      ...state,
+      players: updatedPlayers,
+      currentTrick: { cards: newTrickCards, leadSuit: newLeadSuit },
+      lastAction: `${player.name} played ${card.rank} of ${card.suit}`,
+      legalCardIds: [],
+    });
+  }
+
+  const nextPlayerIndex = (state.currentPlayerIndex + 1) % 4;
+  const nextPlayer = updatedPlayers[nextPlayerIndex];
+  const legalCardIds = nextPlayer.cards.map(c => c.id);
+
+  return {
     ...state,
     players: updatedPlayers,
     currentTrick: { cards: newTrickCards, leadSuit: newLeadSuit },
+    currentPlayerIndex: nextPlayerIndex,
     lastAction: `${player.name} played ${card.rank} of ${card.suit}`,
+    legalCardIds,
   };
-
-  if (newTrickCards.length === 4) {
-    return resolveTrick(newState);
-  }
-
-  newState.currentPlayerIndex = (state.currentPlayerIndex + 1) % 4;
-  return newState;
 }
 
 function resolveTrick(state: CallBreakState): CallBreakState {
@@ -173,11 +199,14 @@ function resolveTrick(state: CallBreakState): CallBreakState {
 export function advanceCallBreakTrick(state: CallBreakState): CallBreakState {
   const winnerId = state.currentTrick.winnerId!;
   const winnerIdx = state.players.findIndex(p => p.id === winnerId);
+  const winnerPlayer = state.players[winnerIdx];
+  const legalCardIds = winnerPlayer.cards.map(c => c.id);
   return {
     ...state,
     phase: 'TRICK_PLAY',
     currentTrick: { cards: [], leadSuit: null },
     currentPlayerIndex: winnerIdx,
+    legalCardIds,
   };
 }
 

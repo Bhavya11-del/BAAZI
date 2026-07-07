@@ -10,8 +10,9 @@ export function setupSocketHandlers(io: Server, gameManager: GameManager) {
   io.use((socket, next) => {
     const token = socket.handshake.auth.token;
     if (!token || token.startsWith('guest_') || token === 'guest_token') {
-      const guestId = (token && token.startsWith('guest_')) ? token : undefined;
-      const guest = (guestId && userStore.findById(guestId)) || userStore.createGuest(guestId);
+      // Strip the 'guest_' prefix to get the raw UUID for lookup
+      const rawId = token?.startsWith('guest_') ? token.slice(6) : undefined;
+      const guest = (rawId && userStore.findById(rawId)) || userStore.createGuest(rawId);
       (socket as any).userId = guest.id;
       (socket as any).user = guest;
       return next();
@@ -120,6 +121,14 @@ export function setupSocketHandlers(io: Server, gameManager: GameManager) {
       socket.join(data.roomId);
       socket.emit('room:joined', { room: gameManager.getRoom(data.roomId) });
       socket.to(data.roomId).emit('room:spectatorJoined', { userId: user.id, name: user.name });
+    });
+
+    // ── GUEST SYNC ────────────────────────────────────────────
+    socket.on('guest:sync', (data: any) => {
+      if (user.isGuest && data) {
+        userStore.updateGuestProgress(user.id, data);
+        socket.emit('guest:synced', { ok: true });
+      }
     });
 
     // ── GAME ───────────────────────────────────────────────────

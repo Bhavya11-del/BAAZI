@@ -4,7 +4,7 @@ import { useAuthStore } from '../stores/authStore';
 import { useSocketStore } from '../stores/socketStore';
 import { useGameStore } from '../stores/gameStore';
 import { useEffect, useState } from 'react';
-import { Crown, Swords, Users, Bot, Star, Trophy, Zap, Clock, ChevronRight } from 'lucide-react';
+import { Crown, Swords, Users, Bot, Star, Trophy, ChevronRight, Zap } from 'lucide-react';
 import axios from 'axios';
 
 const GAMES = [
@@ -46,11 +46,7 @@ const GAMES = [
   },
 ];
 
-const DAILY_CHALLENGES = [
-  { title: 'Win 3 Teen Patti rounds', reward: '500 XP', progress: 1, total: 3 },
-  { title: 'Play a Call Break game', reward: '200 XP', progress: 0, total: 1 },
-  { title: 'Win with a Trail hand', reward: '1000 XP + Badge', progress: 0, total: 1 },
-];
+const DAILY_CHALLENGES: any[] = [];
 
 export default function HomePage() {
   const navigate = useNavigate();
@@ -133,24 +129,25 @@ export default function HomePage() {
               </motion.button>
             </div>
 
-            {/* Stats bar */}
-            <div className="flex justify-center gap-8 mt-12">
-              {[
-                { label: 'Games Played', value: '1.2M+', icon: '🎮' },
-                { label: 'Active Players', value: '48,291', icon: '👥' },
-                { label: 'Tournaments', value: '340+', icon: '🏆' },
-              ].map((stat, i) => (
-                <motion.div
-                  key={i} initial={{ opacity: 0, y: 20 }}
-                  animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.3 + i * 0.1 }}
-                  className="text-center"
-                >
-                  <div className="text-2xl mb-1">{stat.icon}</div>
-                  <div className="font-cinzel font-bold text-gold text-xl">{stat.value}</div>
-                  <div className="text-white/40 text-xs">{stat.label}</div>
-                </motion.div>
-              ))}
-            </div>
+            {/* Stats bar — real data */}
+            {leaderboard.length > 0 && (
+              <div className="flex justify-center gap-8 mt-12">
+                {[
+                  { label: 'Registered Players', value: leaderboard.length, icon: '👥' },
+                  { label: 'Games Available', value: '3', icon: '🎮' },
+                ].map((stat, i) => (
+                  <motion.div
+                    key={i} initial={{ opacity: 0, y: 20 }}
+                    animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.3 + i * 0.1 }}
+                    className="text-center"
+                  >
+                    <div className="text-2xl mb-1">{stat.icon}</div>
+                    <div className="font-cinzel font-bold text-gold text-xl">{stat.value}</div>
+                    <div className="text-white/40 text-xs">{stat.label}</div>
+                  </motion.div>
+                ))}
+              </div>
+            )}
           </motion.div>
         </div>
       </section>
@@ -268,35 +265,8 @@ export default function HomePage() {
           </div>
         </div>
 
-        {/* Daily Challenges */}
+        {/* Player Stats */}
         <div className="space-y-4">
-          <div className="glass-panel p-6">
-            <div className="flex items-center gap-2 mb-5">
-              <Zap className="w-5 h-5 text-gold" />
-              <h2 className="font-cinzel font-bold text-lg text-white">Daily Challenges</h2>
-            </div>
-            <div className="space-y-4">
-              {DAILY_CHALLENGES.map((ch, i) => (
-                <div key={i} className="bg-black/20 rounded-xl p-4">
-                  <div className="flex justify-between items-start mb-2">
-                    <div className="text-white/80 text-sm font-medium">{ch.title}</div>
-                    <div className="text-gold text-xs font-bold ml-2">{ch.reward}</div>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <div className="flex-1 bg-white/10 rounded-full h-2">
-                      <motion.div
-                        className="h-2 rounded-full bg-gradient-to-r from-gold-dark to-gold"
-                        initial={{ width: 0 }}
-                        animate={{ width: `${(ch.progress / ch.total) * 100}%` }}
-                        transition={{ delay: 0.5 + i * 0.1, duration: 0.8 }}
-                      />
-                    </div>
-                    <span className="text-white/40 text-xs">{ch.progress}/{ch.total}</span>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
 
           {/* Quick Stats */}
           {user && (
@@ -304,10 +274,10 @@ export default function HomePage() {
               <h3 className="font-cinzel text-sm font-bold text-gold mb-4">Your Stats</h3>
               <div className="grid grid-cols-2 gap-3">
                 {[
-                  { label: 'Wins', value: user.wins, icon: '🏆' },
-                  { label: 'Games', value: user.gamesPlayed, icon: '🎮' },
-                  { label: 'Level', value: user.level, icon: '⭐' },
-                  { label: 'ELO', value: user.elo, icon: '📊' },
+                  { label: 'Wins', value: user.wins > 0 ? user.wins : '-', icon: '🏆' },
+                  { label: 'Games', value: user.gamesPlayed > 0 ? user.gamesPlayed : '-', icon: '🎮' },
+                  { label: 'Level', value: user.level != null ? user.level : '-', icon: '⭐' },
+                  { label: 'ELO', value: user.elo != null ? user.elo : '-', icon: '📊' },
                 ].map((stat, i) => (
                   <div key={i} className="bg-black/20 rounded-xl p-3 text-center">
                     <div className="text-lg mb-1">{stat.icon}</div>

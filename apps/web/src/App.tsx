@@ -1,6 +1,5 @@
 import { Routes, Route } from 'react-router-dom';
 import { useEffect } from 'react';
-import { GoogleOAuthProvider } from '@react-oauth/google';
 import { useAuthStore } from './stores/authStore';
 import { useSocketStore } from './stores/socketStore';
 import HomePage from './pages/HomePage';
@@ -11,9 +10,6 @@ import ProfilePage from './pages/ProfilePage';
 import LeaderboardPage from './pages/LeaderboardPage';
 import AdminPage from './pages/AdminPage';
 import Navbar from './components/Navbar';
-import { isGoogleConfigured } from './components/GoogleSignIn';
-
-const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID as string | undefined;
 
 function AppContent() {
   const { user, loadFromStorage } = useAuthStore();
@@ -45,11 +41,5 @@ function AppContent() {
 }
 
 export default function App() {
-  return isGoogleConfigured() ? (
-    <GoogleOAuthProvider clientId={GOOGLE_CLIENT_ID!}>
-      <AppContent />
-    </GoogleOAuthProvider>
-  ) : (
-    <AppContent />
-  );
+  return <AppContent />;
 }

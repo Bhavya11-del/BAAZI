@@ -1,33 +1,33 @@
-import { useGoogleLogin } from '@react-oauth/google';
+import { signInWithPopup } from 'firebase/auth';
+import { useNavigate } from 'react-router-dom';
 import { useAuthStore } from '../stores/authStore';
 import { useSocketStore } from '../stores/socketStore';
+import { auth, googleProvider, isFirebaseConfigured } from '../firebase';
 import toast from 'react-hot-toast';
 
-const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID as string | undefined;
-
 export default function GoogleSignIn() {
+  const navigate = useNavigate();
   const { loginWithGoogle } = useAuthStore();
   const { connect } = useSocketStore();
 
-  const login = useGoogleLogin({
-    onSuccess: async (tokenResponse) => {
-      try {
-        const user = await loginWithGoogle(tokenResponse.access_token);
-        connect(user.token);
-        toast.success('Signed in with Google!');
-      } catch (err: any) {
-        toast.error(err?.response?.data?.error || 'Google Sign-In failed');
-      }
-    },
-    onError: () => {
-      toast.error('Google Sign-In failed');
-    },
-    flow: 'implicit',
-  });
+  const handleClick = async () => {
+    if (!auth || !googleProvider) return;
+    try {
+      const result = await signInWithPopup(auth, googleProvider);
+      const idToken = await result.user.getIdToken();
+      const user = await loginWithGoogle(idToken);
+      connect(user.token);
+      toast.success('Signed in with Google!');
+      navigate('/');
+    } catch (err: any) {
+      if (err.code === 'auth/popup-closed-by-user') return;
+      toast.error(err?.response?.data?.error || 'Google Sign-In failed');
+    }
+  };
 
   return (
     <button
-      onClick={() => login()}
+      onClick={handleClick}
       className="btn-ghost w-full flex items-center justify-center gap-3 !py-2.5"
     >
       <svg viewBox="0 0 24 24" className="w-5 h-5 flex-shrink-0" xmlns="http://www.w3.org/2000/svg">
@@ -41,6 +41,4 @@ export default function GoogleSignIn() {
   );
 }
 
-export function isGoogleConfigured(): boolean {
-  return !!GOOGLE_CLIENT_ID;
-}
+export { isFirebaseConfigured };

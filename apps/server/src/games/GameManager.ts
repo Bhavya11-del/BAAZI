@@ -298,54 +298,108 @@ export class GameManager {
   handleAction(roomId: string, userId: string, action: any, io: Server) {
     const room = this.rooms.get(roomId);
     const state = this.gameStates.get(roomId);
-    if (!room || !state) return;
+    if (!room || !state) {
+      console.log(`[GM] handleAction: room or state not found (roomId=${roomId})`);
+      return;
+    }
+
+    console.log(`[GM] ===== handleAction ENTER =====`);
+    console.log(`[GM] room.game=${room.game} userId=${userId}`);
+    console.log(`[GM] action.type=${action.type} action.card=${JSON.stringify(action.card)}`);
+    console.log(`[GM] state.phase=${state.phase} state.currentPlayerIndex=${state.currentPlayerIndex}`);
+    console.log(`[GM] state.currentTrick.cards.length=${state.currentTrick?.cards?.length} state.currentTrick.leadSuit=${state.currentTrick?.leadSuit}`);
+    console.log(`[GM] state.legalCardIds=${JSON.stringify(state.legalCardIds)}`);
+    if (state.players) {
+      state.players.forEach((p: any, i: number) => {
+        console.log(`[GM] player[${i}]: id=${p.id?.slice(0,12)} name=${p.name} isBot=${p.isBot} cards=${p.cards?.length}`);
+      });
+    }
 
     // Deduplication: check sequence number
     const seq = this.actionSeq.get(roomId) || 0;
-    if (action.seq !== undefined && action.seq <= seq) return;
+    if (action.seq !== undefined && action.seq <= seq) {
+      console.log(`[GM] DEDUP: action.seq=${action.seq} <= seq=${seq}, ignoring`);
+      return;
+    }
 
     // Verify it's this player's turn
     const currentPlayer = this.getCurrentPlayerFromState(state, room.game);
-    if (currentPlayer?.id !== userId) return;
-
-    this.clearTurnTimer(roomId);
+    console.log(`[GM] handleAction: game=${room.game} userId=${userId} action=${JSON.stringify(action)} currentPlayerId=${currentPlayer?.id}`);
+    if (currentPlayer?.id !== userId) {
+      console.log(`[GM] REJECT: not ${userId}'s turn — current is ${currentPlayer?.id}`);
+      this.sendErrorToUser(roomId, userId, io, 'It is not your turn');
+      return;
+    }
 
     let newState = state;
     let actionRejected = false;
+    let rejectReason = '';
     try {
       switch (room.game) {
         case 'teen-patti': {
+          console.log(`[GM] teen-patti action: ${action.type}`);
           newState = applyTeenPattiAction(state, { ...action, playerId: userId });
           if (newState.phase === 'SHOWDOWN') newState = resolveShowdown(newState);
+          if (newState === state) {
+            actionRejected = true;
+            rejectReason = 'Invalid move for current game phase';
+            console.log(`[GM] REJECT (teen-patti): ${rejectReason}`);
+          }
           break;
         }
         case 'call-break': {
-          if (action.type === 'bid') newState = placeBid(state, userId, action.bid);
-          else if (action.type === 'playCard') newState = playCard(state, userId, action.card);
+          if (action.type === 'bid') {
+            console.log(`[GM] call-break bid: userId=${userId} bid=${action.bid}`);
+            newState = placeBid(state, userId, action.bid);
+            if (newState === state) {
+              actionRejected = true;
+              rejectReason = 'Invalid bid (must be 1-13)';
+              console.log(`[GM] REJECT (cb bid): ${rejectReason}`);
+            }
+          } else if (action.type === 'playCard') {
+            console.log(`[GM] call-break playCard: userId=${userId} card=${JSON.stringify(action.card)}`);
+            newState = playCard(state, userId, action.card);
+            if (newState === state) {
+              actionRejected = true;
+              rejectReason = 'Cannot play that card — check rules (follow suit, your turn)';
+              console.log(`[GM] REJECT (cb playCard): state unchanged — card was invalid`);
+            } else {
+              console.log(`[GM] call-break playCard SUCCESS: phase=${newState.phase} currentPlayerIndex=${newState.currentPlayerIndex} trickCards=${newState.currentTrick?.cards?.length}`);
+            }
+          }
           break;
         }
         case 'mendicot': {
           if (action.type === 'playCard') {
-            const prevIdx = state.currentPlayerIndex;
+            console.log(`[GM] mendicot playCard: userId=${userId} card=${JSON.stringify(action.card)}`);
             newState = playMendicotCard(state, userId, action.card);
-            // If the state didn't change, the move was invalid — notify the player
             if (newState === state) {
               actionRejected = true;
+              rejectReason = 'Cannot play that card — check legal moves';
+              console.log(`[GM] REJECT (m playCard): state unchanged — card was invalid`);
+            } else {
+              console.log(`[GM] mendicot playCard SUCCESS: phase=${newState.phase} currentPlayerIndex=${newState.currentPlayerIndex} trickCards=${newState.currentTrick?.cards?.length}`);
             }
           }
           break;
         }
       }
     } catch (e) {
-      console.error('Action error:', e);
+      console.error(`[GM] Action error:`, e);
       this.sendErrorToUser(roomId, userId, io, 'An error occurred processing your action');
       return;
     }
 
     if (actionRejected) {
-      this.sendErrorToUser(roomId, userId, io, 'Invalid move — cannot play that card');
+      this.sendErrorToUser(roomId, userId, io, rejectReason || 'Invalid move');
+      // Re-schedule the turn timer since the action was rejected
+      this.scheduleTurnTimer(roomId, io);
+      this.scheduleBotTurn(roomId, io);
       return;
     }
+
+    // Clear turn timer ONLY after successful validation
+    this.clearTurnTimer(roomId);
 
     // Log the action
     const log = this.actionLogs.get(roomId) || [];
@@ -356,9 +410,13 @@ export class GameManager {
     this.gameStates.set(roomId, newState);
     this.broadcastState(roomId, io);
 
+    console.log(`[GM] broadcastState done: phase=${newState.phase} currentPlayerIndex=${newState.currentPlayerIndex}`);
+
     if (newState.phase === 'RESULT' || newState.phase === 'GAME_OVER' || newState.phase === 'SCORING') {
+      console.log(`[GM] game end phase: ${newState.phase}`);
       this.handleGameEnd(roomId, newState, room, io);
     } else if (newState.phase === 'TRICK_COMPLETE') {
+      console.log(`[GM] trick complete — scheduling advance`);
       this.scheduleTrickAdvance(roomId, io);
     } else {
       this.scheduleTurnTimer(roomId, io);

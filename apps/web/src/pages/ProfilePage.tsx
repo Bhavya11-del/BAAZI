@@ -37,7 +37,15 @@ export default function ProfilePage() {
   if (loading) return <div className="min-h-screen pt-20 text-center text-white/50">Loading profile...</div>;
   if (!user) return <div className="min-h-screen pt-20 text-center text-white/50">User not found</div>;
 
-  const winRate = user.gamesPlayed > 0 ? Math.round((user.wins / user.gamesPlayed) * 100) : 0;
+  const winRate = user.gamesPlayed > 0 ? Math.round((user.wins / user.gamesPlayed) * 100) : null;
+  const displayPlayed = user.gamesPlayed > 0 ? user.gamesPlayed : '-';
+  const displayWins = user.wins > 0 ? user.wins : '-';
+  const displayLosses = user.losses > 0 ? user.losses : '-';
+  const displayChips = user.chips != null ? `👑 ${user.chips}` : '-';
+  const displayElo = user.elo != null ? user.elo : '-';
+  const displayLevel = user.level != null ? `Level ${user.level}` : '-';
+  const displayXp = user.xp != null ? user.xp : '-';
+  const displayHighestElo = user.highestElo != null ? user.highestElo : '-';
 
   const getTierColor = (elo: number) => {
     if (elo >= 2100) return 'text-cyan-300';
@@ -55,6 +63,10 @@ export default function ProfilePage() {
     return 'Bronze';
   };
 
+  const xpLevel = user.xp != null ? user.xp % 500 : 0;
+  const xpToNext = 500 - xpLevel;
+  const xpPercent = user.xp != null ? (xpLevel / 5) : 0;
+
   return (
     <div className="min-h-screen pt-20 px-4 pb-10">
       <div className="max-w-4xl mx-auto space-y-6">
@@ -69,33 +81,46 @@ export default function ProfilePage() {
                 <img src={user.avatar} className="w-full h-full rounded-full" alt="" />
               </div>
               <div className="absolute -bottom-3 left-1/2 -translate-x-1/2 bg-gradient-to-r from-gold-dark via-gold to-gold-dark px-4 py-1 rounded-full border border-black text-black font-bold text-sm shadow-lg whitespace-nowrap">
-                Level {user.level}
+                {displayLevel}
               </div>
             </div>
 
             {/* Info */}
             <div className="flex-1 text-center md:text-left">
               <h1 className="font-cinzel text-3xl font-bold text-white mb-2">{user.name}</h1>
-              <div className={`font-bold text-lg mb-4 ${getTierColor(user.elo)}`}>
-                {getTierName(user.elo)} Tier • {user.elo} ELO
-              </div>
+              {(user.elo != null) && (
+                <div className={`font-bold text-lg mb-4 ${getTierColor(user.elo)}`}>
+                  {getTierName(user.elo)} Tier • {user.elo} ELO
+                </div>
+              )}
+              {(user.elo == null) && (
+                <div className="font-bold text-lg mb-4 text-white/40">ELO: -</div>
+              )}
               
               <div className="flex flex-wrap justify-center md:justify-start gap-3">
                 <div className="bg-black/30 px-4 py-2 rounded-xl border border-white/5">
                   <div className="text-white/40 text-xs mb-1 uppercase tracking-wider">Win Rate</div>
-                  <div className="text-white font-bold">{winRate}%</div>
+                  <div className="text-white font-bold">{winRate != null ? `${winRate}%` : '-'}</div>
                 </div>
                 <div className="bg-black/30 px-4 py-2 rounded-xl border border-white/5">
                   <div className="text-white/40 text-xs mb-1 uppercase tracking-wider">Games</div>
-                  <div className="text-white font-bold">{user.gamesPlayed}</div>
+                  <div className="text-white font-bold">{displayPlayed}</div>
                 </div>
                 <div className="bg-black/30 px-4 py-2 rounded-xl border border-white/5">
                   <div className="text-white/40 text-xs mb-1 uppercase tracking-wider">Record</div>
-                  <div className="text-white font-bold"><span className="text-green-400">{user.wins}</span> - <span className="text-red-400">{user.losses}</span></div>
+                  <div className="text-white font-bold">
+                    {displayWins !== '-' && displayLosses !== '-'
+                      ? <><span className="text-green-400">{user.wins}</span> - <span className="text-red-400">{user.losses}</span></>
+                      : '-'}
+                  </div>
                 </div>
                 <div className="bg-black/30 px-4 py-2 rounded-xl border border-white/5">
                   <div className="text-white/40 text-xs mb-1 uppercase tracking-wider">Royal Chips</div>
-                  <div className="text-yellow-400 font-bold">👑 {user.chips ?? 0}</div>
+                  <div className="text-yellow-400 font-bold">{displayChips}</div>
+                </div>
+                <div className="bg-black/30 px-4 py-2 rounded-xl border border-white/5">
+                  <div className="text-white/40 text-xs mb-1 uppercase tracking-wider">Highest ELO</div>
+                  <div className="text-white font-bold">{displayHighestElo}</div>
                 </div>
               </div>
             </div>
@@ -103,48 +128,48 @@ export default function ProfilePage() {
             {/* XP Bar */}
             <div className="w-full md:w-48 bg-black/30 p-4 rounded-xl border border-white/5 text-center">
               <div className="text-white/40 text-xs mb-2">XP Progress</div>
-              <div className="text-gold font-bold text-xl mb-3">{user.xp} <span className="text-xs text-white/40">XP</span></div>
-              <div className="w-full bg-black/50 h-2 rounded-full overflow-hidden">
-                <div className="bg-gold h-full rounded-full" style={{ width: `${(user.xp % 500) / 5}%` }} />
-              </div>
-              <div className="text-[10px] text-white/30 mt-2">{500 - (user.xp % 500)} XP to next level</div>
+              {user.xp != null
+                ? <><div className="text-gold font-bold text-xl mb-3">{user.xp} <span className="text-xs text-white/40">XP</span></div>
+                  <div className="w-full bg-black/50 h-2 rounded-full overflow-hidden">
+                    <div className="bg-gold h-full rounded-full" style={{ width: `${xpPercent}%` }} />
+                  </div>
+                  <div className="text-[10px] text-white/30 mt-2">{xpToNext} XP to next level</div></>
+                : <div className="text-white/40 text-sm">-</div>
+              }
             </div>
           </div>
         </motion.div>
 
-        {/* Stats Grid */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+        {/* Ranked Stats */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
           <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }} className="glass-panel p-6">
-            <h3 className="font-cinzel text-lg font-bold text-gold flex items-center gap-2 mb-4"><Star className="w-5 h-5"/> Favorite Game</h3>
-            <div className="flex items-center gap-4">
-              <div className="text-4xl">🃏</div>
-              <div>
-                <div className="font-bold text-white">Teen Patti</div>
-                <div className="text-white/40 text-sm">68% of matches</div>
-              </div>
+            <h3 className="font-cinzel text-lg font-bold text-gold flex items-center gap-2 mb-4"><Star className="w-5 h-5"/> Ranked Stats</h3>
+            <div className="space-y-3 text-sm">
+              <div className="flex justify-between"><span className="text-white/60">Ranked Games</span><span className="text-white font-bold">{user.rankedGames > 0 ? user.rankedGames : '-'}</span></div>
+              <div className="flex justify-between"><span className="text-white/60">Ranked Wins</span><span className="text-white font-bold">{user.rankedWins > 0 ? user.rankedWins : '-'}</span></div>
+              <div className="flex justify-between"><span className="text-white/60">Ranked Losses</span><span className="text-white font-bold">{user.rankedLosses > 0 ? user.rankedLosses : '-'}</span></div>
+              {user.rankedGames > 0 && (
+                <div className="flex justify-between"><span className="text-white/60">Ranked Win Rate</span><span className="text-gold font-bold">{Math.round((user.rankedWins / user.rankedGames) * 100)}%</span></div>
+              )}
             </div>
           </motion.div>
-          
+
           <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.2 }} className="glass-panel p-6">
-            <h3 className="font-cinzel text-lg font-bold text-gold flex items-center gap-2 mb-4"><Target className="w-5 h-5"/> Play Style</h3>
-            <div className="space-y-3">
+            <h3 className="font-cinzel text-lg font-bold text-gold flex items-center gap-2 mb-4"><Clock className="w-5 h-5"/> Activity</h3>
+            <div className="space-y-3 text-sm">
               <div>
-                <div className="flex justify-between text-xs mb-1"><span className="text-white/60">Aggressive</span><span className="text-gold">75%</span></div>
-                <div className="w-full bg-black/30 h-1.5 rounded-full"><div className="bg-gold h-full rounded-full w-[75%]"/></div>
+                <div className="text-white/60 text-xs">Member since</div>
+                <div className="font-bold text-white">{user.createdAt ? new Date(user.createdAt).toLocaleDateString() : '-'}</div>
               </div>
               <div>
-                <div className="flex justify-between text-xs mb-1"><span className="text-white/60">Bluffing</span><span className="text-gold">40%</span></div>
-                <div className="w-full bg-black/30 h-1.5 rounded-full"><div className="bg-gold h-full rounded-full w-[40%]"/></div>
+                <div className="text-white/60 text-xs">Lifetime Earned</div>
+                <div className="font-bold text-white">{user.lifetimeEarned > 0 ? `${user.lifetimeEarned} chips` : '-'}</div>
+              </div>
+              <div>
+                <div className="text-white/60 text-xs">Lifetime Spent</div>
+                <div className="font-bold text-white">{user.lifetimeSpent > 0 ? `${user.lifetimeSpent} chips` : '-'}</div>
               </div>
             </div>
-          </motion.div>
-          
-          <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.3 }} className="glass-panel p-6">
-            <h3 className="font-cinzel text-lg font-bold text-gold flex items-center gap-2 mb-4"><Clock className="w-5 h-5"/> Activity</h3>
-            <div className="text-white/80 text-sm">Member since</div>
-            <div className="font-bold text-white mb-3">{new Date(user.createdAt).toLocaleDateString()}</div>
-            <div className="text-white/80 text-sm">Last played</div>
-            <div className="font-bold text-white">Today</div>
           </motion.div>
         </div>
 

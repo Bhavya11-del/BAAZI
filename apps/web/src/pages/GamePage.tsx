@@ -26,7 +26,6 @@ export default function GamePage() {
   const [showChat, setShowChat] = useState(false);
   const [chatInput, setChatInput] = useState('');
   const [showEmotes, setShowEmotes] = useState(false);
-  const [selectedCards, setSelectedCards] = useState<string[]>([]);
   const [showResult, setShowResult] = useState(false);
   const [bidValue, setBidValue] = useState(1);
   const [localRoomId, setLocalRoomId] = useState<string | null>(null);
@@ -36,6 +35,7 @@ export default function GamePage() {
   const [matchmakingTimeout, setMatchmakingTimeout] = useState(false);
   const [matchmakingRetries, setMatchmakingRetries] = useState(0);
   const [findingStatus, setFindingStatus] = useState<'connecting' | 'matchmaking' | 'timeout' | 'error' | 'joined'>('connecting');
+  const [lastError, setLastError] = useState<string | null>(null);
   const quickPlayEmitted = useRef(false);
   const matchmakingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
@@ -148,7 +148,10 @@ export default function GamePage() {
       toast(`${data.name}: ${data.emote}`, { duration: 2000, icon: undefined });
     };
     const onError = ({ message }: any) => {
+      console.log('[CARD-PLAY] Server error:', message);
       toast.error(message);
+      setLastError(message);
+      setTimeout(() => setLastError(null), 5000);
       if (message?.toLowerCase().includes('room not found') || message?.toLowerCase().includes('no rooms')) {
         setFindingStatus('error');
       }
@@ -215,8 +218,13 @@ export default function GamePage() {
   })();
 
   const sendAction = (action: any) => {
-    if (!rid || isSpectator) return;
-    socket?.emit('game:action', { roomId: rid, action: { ...action, seq: Date.now() } });
+    if (!rid) { console.log('[CARD-PLAY] sendAction BLOCKED: no rid'); return; }
+    if (isSpectator) { console.log('[CARD-PLAY] sendAction BLOCKED: is spectator'); return; }
+    if (!socket) { console.log('[CARD-PLAY] sendAction BLOCKED: no socket'); return; }
+    if (!socket.connected) { console.log('[CARD-PLAY] sendAction BLOCKED: socket not connected'); return; }
+    const payload = { roomId: rid, action: { ...action, seq: Date.now() } };
+    console.log('[CARD-PLAY] EMITTING game:action', JSON.stringify(payload));
+    socket.emit('game:action', payload);
   };
 
   const sendChat = () => {
@@ -446,6 +454,7 @@ export default function GamePage() {
               onTeenPattiAction={{ fold: tpFold, call: tpCall, raise: tpRaise, show: tpShow, see: tpSeeCards }}
               onCBBid={cbBid} onCBPlayCard={cbPlayCard} onMPlayCard={mPlayCard}
               bidValue={bidValue} setBidValue={setBidValue}
+              lastError={lastError}
             />
           </div>
         )}
@@ -598,41 +607,72 @@ function CenterArea({ gameState, gameType }: any) {
 
       {(gameType === 'call-break' || gameType === 'mendicot') && (
         <div className="w-full">
-          <div className="glass-panel p-4 mb-3 relative">
+          <div className="glass-panel p-4 mb-3">
             <div className="text-white/40 text-xs text-center mb-3">
               {gameState.phase === 'TRICK_COMPLETE' ? 'Trick Complete' : 'Current Trick'}
             </div>
-            <div className="flex justify-center gap-3 min-h-[80px] items-center flex-wrap">
-              {(gameState.currentTrick?.cards || []).map((entry: any, i: number) => {
-                const isWinner = gameState.phase === 'TRICK_COMPLETE' && gameState.currentTrick?.winnerId === entry.playerId;
-                return (
-                  <div key={i} className={`flex flex-col items-center gap-1 ${isWinner ? 'scale-110' : ''}`}>
-                    <div className="relative">
-                      <PlayingCard suit={entry.card.suit} rank={entry.card.rank} size="sm" dealDelay={i * 0.1} />
-                      {isWinner && (
-                        <div className="absolute -top-2 -right-2 w-5 h-5 bg-gold rounded-full flex items-center justify-center text-[10px] text-felt-darker font-bold shadow-gold">
-                          👑
+            <AnimatePresence mode="popLayout">
+              {gameState.currentTrick?.cards?.length > 0 ? (
+                <motion.div
+                  key="trick-cards"
+                  className="flex justify-center gap-3 min-h-[80px] items-center flex-wrap"
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  exit={{ opacity: 0, scale: 0.85, transition: { duration: 0.35 } }}
+                >
+                  {(gameState.currentTrick?.cards || []).map((entry: any, i: number) => {
+                    const isWinner = gameState.phase === 'TRICK_COMPLETE' && gameState.currentTrick?.winnerId === entry.playerId;
+                    return (
+                      <motion.div
+                        key={entry.playerId + entry.card.id}
+                        layout
+                        initial={{ opacity: 0, y: -20 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        transition={{ delay: i * 0.06 }}
+                        className="flex flex-col items-center gap-1"
+                      >
+                        <div className="relative">
+                          <PlayingCard
+                            suit={entry.card.suit} rank={entry.card.rank}
+                            size="sm" dealDelay={i * 0.1}
+                            className={isWinner ? 'ring-2 ring-gold ring-offset-1 ring-offset-felt-darker' : ''}
+                          />
+                          {isWinner && (
+                            <div className="absolute -top-2 -right-2 w-5 h-5 bg-gold rounded-full flex items-center justify-center text-[10px] text-felt-darker font-bold shadow-gold">
+                              👑
+                            </div>
+                          )}
                         </div>
-                      )}
-                    </div>
-                    <div className={`text-xs truncate max-w-[50px] ${isWinner ? 'text-gold font-bold' : 'text-white/40'}`}>
-                      {gameState.players.find((p: any) => p.id === entry.playerId)?.name?.split(' ')[0]}
-                    </div>
-                  </div>
-                );
-              })}
-              {(gameState.currentTrick?.cards || []).length === 0 && (
-                <div className="text-white/20 text-sm">Play a card to start</div>
+                        <div className={`text-xs truncate max-w-[50px] ${isWinner ? 'text-gold font-bold' : 'text-white/40'}`}>
+                          {gameState.players.find((p: any) => p.id === entry.playerId)?.name?.split(' ')[0]}
+                        </div>
+                      </motion.div>
+                    );
+                  })}
+                </motion.div>
+              ) : (
+                <motion.div
+                  key="empty-trick"
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  className="flex justify-center min-h-[80px] items-center"
+                >
+                  <div className="text-white/20 text-sm">Play a card to start</div>
+                </motion.div>
               )}
-            </div>
+            </AnimatePresence>
+            {/* Winner notification — always BELOW the cards, never overlaid */}
             {gameState.phase === 'TRICK_COMPLETE' && gameState.currentTrick?.winnerId && (
-              <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}
-                className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                <div className="bg-black/60 backdrop-blur-sm rounded-xl px-6 py-2 border border-gold/40 shadow-gold">
-                  <span className="text-gold font-bold text-sm">
-                    🏆 {gameState.players.find((p: any) => p.id === gameState.currentTrick.winnerId)?.name?.split(' ')[0]} wins trick!
-                  </span>
-                </div>
+              <motion.div
+                key="winner-msg"
+                initial={{ opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0 }}
+                className="mt-3 text-center"
+              >
+                <span className="text-gold font-bold text-sm">
+                  🏆 {gameState.players.find((p: any) => p.id === gameState.currentTrick.winnerId)?.name?.split(' ')[0]} wins trick!
+                </span>
               </motion.div>
             )}
           </div>
@@ -684,12 +724,40 @@ function CenterArea({ gameState, gameType }: any) {
 }
 
 // ── My Hand + Controls ──────────────────────────────────────────
-function MyHand({ player, gameState, gameType, isMyTurn, onTeenPattiAction, onCBBid, onCBPlayCard, onMPlayCard, bidValue, setBidValue }: any) {
+function MyHand({ player, gameState, gameType, isMyTurn, onTeenPattiAction, onCBBid, onCBPlayCard, onMPlayCard, bidValue, setBidValue, lastError }: any) {
   const [seeCards, setSeeCards] = useState(false);
   const cards = player.cards || [];
   const isSeen = player.status === 'seen';
+  const legalCardIds: string[] = gameState?.legalCardIds || [];
 
   const handleSee = () => { setSeeCards(true); onTeenPattiAction.see(); };
+
+  const handleCardClick = (card: any) => {
+    console.log('[CARD-PLAY] handleCardClick called', { cardId: card.id, rank: card.rank, suit: card.suit, isMyTurn, gameType, phase: gameState?.phase });
+
+    if (!isMyTurn) {
+      console.log('[CARD-PLAY] BLOCKED: not my turn');
+      return;
+    }
+    if (gameType !== 'call-break' && gameType !== 'mendicot') {
+      console.log('[CARD-PLAY] BLOCKED: wrong game type');
+      return;
+    }
+    if (gameState?.phase === 'BIDDING' || gameState?.phase === 'TRICK_COMPLETE') {
+      console.log('[CARD-PLAY] BLOCKED: wrong phase');
+      return;
+    }
+
+    // Single-click-to-play
+    console.log('[CARD-PLAY] PLAYING card:', card.id, card.rank, 'of', card.suit);
+    const payload = { type: 'playCard', card };
+    console.log('[CARD-PLAY] Sending action payload:', JSON.stringify(payload));
+    if (gameType === 'call-break') {
+      onCBPlayCard(card);
+    } else {
+      onMPlayCard(card);
+    }
+  };
 
   return (
     <div className="flex flex-col items-center gap-3 w-full">
@@ -709,10 +777,19 @@ function MyHand({ player, gameState, gameType, isMyTurn, onTeenPattiAction, onCB
         </div>
       </div>
 
+      {/* Error display */}
+      {lastError && (
+        <div className="text-red-400 text-sm bg-red-900/30 px-4 py-2 rounded-lg border border-red-500/40 animate-pulse">
+          <AlertCircle className="w-4 h-4 inline mr-1" /> {lastError}
+        </div>
+      )}
+
       <div className="flex flex-wrap justify-center gap-1 md:gap-2 max-w-2xl">
         {cards.map((card: any, i: number) => {
           const isHidden = card.id === 'hidden' || (gameType === 'teen-patti' && !seeCards && player.status === 'blind');
           const canPlay = isMyTurn && (gameType === 'call-break' || gameType === 'mendicot') && gameState?.phase !== 'BIDDING' && gameState?.phase !== 'TRICK_COMPLETE';
+          const isLegal = legalCardIds.length === 0 || legalCardIds.includes(card.id);
+
           return (
             <PlayingCard
               key={card.id + i}
@@ -721,8 +798,8 @@ function MyHand({ player, gameState, gameType, isMyTurn, onTeenPattiAction, onCB
               faceDown={isHidden}
               dealDelay={i * 0.06}
               size="md"
-              disabled={!canPlay}
-              onClick={canPlay ? () => { gameType === 'call-break' ? onCBPlayCard(card) : onMPlayCard(card); } : undefined}
+              disabled={!canPlay || (!isLegal && legalCardIds.length > 0)}
+              onClick={canPlay ? () => handleCardClick(card) : undefined}
             />
           );
         })}
