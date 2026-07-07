@@ -32,6 +32,7 @@ interface AuthStore {
   login: (email: string, password: string) => Promise<void>;
   register: (email: string, name: string, password: string) => Promise<void>;
   loginAsGuest: () => Promise<void>;
+  loginWithGoogle: (accessToken: string) => Promise<AuthUser>;
   logout: () => void;
   loadFromStorage: () => void;
   updateUser: (updates: Partial<AuthUser>) => void;
@@ -132,6 +133,18 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
       localStorage.setItem('cardkings_user', JSON.stringify(mappedUser));
       set({ user: mappedUser, loading: false });
     }
+  },
+
+  loginWithGoogle: async (accessToken) => {
+    set({ loading: true });
+    const res = await axios.post(`${API}/auth/social`, {
+      provider: 'google',
+      token: accessToken,
+    });
+    const user = { ...res.data.user, token: res.data.token };
+    localStorage.setItem('cardkings_user', JSON.stringify(user));
+    set({ user, loading: false });
+    return user;
   },
 
   logout: () => {

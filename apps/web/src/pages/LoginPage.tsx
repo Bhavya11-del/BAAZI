@@ -4,6 +4,7 @@ import { useNavigate, Link } from 'react-router-dom';
 import { useAuthStore } from '../stores/authStore';
 import { Crown, Mail, Lock, User, Eye, EyeOff } from 'lucide-react';
 import toast from 'react-hot-toast';
+import GoogleSignIn, { isGoogleConfigured } from '../components/GoogleSignIn';
 
 export default function LoginPage() {
   const navigate = useNavigate();
@@ -111,6 +112,21 @@ export default function LoginPage() {
             </button>
           </form>
 
+          {isGoogleConfigured() && (
+            <>
+              <div className="relative my-5">
+                <div className="absolute inset-0 flex items-center">
+                  <div className="w-full border-t border-white/10" />
+                </div>
+                <div className="relative flex justify-center">
+                  <span className="bg-felt-dark px-3 text-white/30 text-xs">or continue with</span>
+                </div>
+              </div>
+
+              <GoogleSignIn />
+            </>
+          )}
+
           <div className="relative my-5">
             <div className="absolute inset-0 flex items-center">
               <div className="w-full border-t border-white/10" />
@@ -125,7 +141,11 @@ export default function LoginPage() {
             Continue as Guest
           </button>
 
-          <p className="text-center text-white/30 text-xs mt-6">
+          <p className="text-center text-white/30 text-xs mt-5">
+            Guest progress is temporary. Sign in with Google to save your progress.
+          </p>
+
+          <p className="text-center text-white/30 text-xs mt-2">
             By playing you agree to fair play. No real money involved.
           </p>
         </div>

@@ -1,6 +1,7 @@
 import { v4 as uuidv4 } from 'uuid';
 import bcrypt from 'bcryptjs';
 import { STARTING_ELO, MIN_ELO, MAX_ELO } from '../services/elo';
+import { SocialProfile } from './socialAuth';
 
 export interface User {
   id: string;
@@ -131,6 +132,31 @@ class UserStore {
 
   findById(id: string): User | undefined {
     return this.users.get(id);
+  }
+
+  findByEmailOnly(email: string): User | undefined {
+    const id = this.emailIndex.get(email);
+    if (!id) return undefined;
+    return this.users.get(id);
+  }
+
+  createSocialUser(profile: SocialProfile): User {
+    const id = uuidv4();
+    const user: User = {
+      id, email: profile.email, name: profile.name, passwordHash: '',
+      avatar: profile.avatar,
+      elo: STARTING_ELO, highestElo: STARTING_ELO,
+      level: 1, xp: 0,
+      wins: 0, losses: 0, gamesPlayed: 0,
+      rankedWins: 0, rankedLosses: 0, rankedGames: 0,
+      chips: 1000, lifetimeEarned: 0, lifetimeSpent: 0,
+      achievements: [], friends: [],
+      createdAt: new Date().toISOString(),
+      isGuest: false,
+    };
+    this.users.set(id, user);
+    this.emailIndex.set(profile.email, id);
+    return user;
   }
 
   getAllUsers(): User[] {
