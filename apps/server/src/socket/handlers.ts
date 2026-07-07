@@ -1,6 +1,7 @@
 import { Server, Socket } from 'socket.io';
 import { GameManager } from '../games/GameManager';
 import { userStore } from '../auth/userStore';
+import { presenceManager } from '../presence';
 import jwt from 'jsonwebtoken';
 
 const JWT_SECRET = process.env.JWT_SECRET || 'cardkings-india-secret-2024';
@@ -29,16 +30,31 @@ export function setupSocketHandlers(io: Server, gameManager: GameManager) {
 
   io.on('connection', (socket: Socket) => {
     const user = (socket as any).user;
-    console.log(`🟢 ${user.name} connected [${socket.id}]`);
+    const presence = presenceManager.register(user.id, user.name, user.avatar || '', socket.id);
 
-    socket.emit('auth:success', { user: sanitizeUser(user) });
+    // ── RECONNECTION ─────────────────────────────────────────
+    const existingRoomId = presence.roomId;
+    let isReconnection = false;
+    if (existingRoomId) {
+      const recovery = gameManager.reconnectPlayer(user.id, existingRoomId);
+      if (recovery) {
+        isReconnection = true;
+        socket.join(existingRoomId);
+        socket.emit('room:reconnected', recovery);
+        socket.to(existingRoomId).emit('room:playerReconnected', { userId: user.id, name: user.name });
+        // Cancel any grace timer for bot takeover
+      }
+    }
 
-    // ── LOBBY ──────────────────────────────────────────────
+    console.log(`🟢 ${user.name} connected [${socket.id}]${isReconnection ? ' (reconnected)' : ''}`);
+    socket.emit('auth:success', { user: sanitizeUser(user), reconnectToken: presence.reconnectToken });
+
+    // ── LOBBY ─────────────────────────────────────────────────
     socket.on('lobby:getRooms', () => {
       socket.emit('lobby:rooms', gameManager.getPublicRooms());
     });
 
-    socket.on('lobby:createRoom', (data: { game: string; maxPlayers: number; isPrivate: boolean; difficulty: string }) => {
+    socket.on('lobby:createRoom', (data: { game: string; maxPlayers: number; isPrivate: boolean; difficulty: string; buyIn?: number; isRanked?: boolean }) => {
       const room = gameManager.createRoom(user.id, data);
       socket.join(room.id);
       socket.emit('room:joined', { room });
@@ -49,8 +65,8 @@ export function setupSocketHandlers(io: Server, gameManager: GameManager) {
       const room = data.roomId
         ? gameManager.joinRoom(user.id, data.roomId)
         : data.code
-        ? gameManager.joinByCode(user.id, data.code)
-        : gameManager.joinMatchmaking(user.id, data.game || 'teen-patti');
+          ? gameManager.joinByCode(user.id, data.code)
+          : gameManager.joinMatchmaking(user.id, data.game || 'teen-patti');
 
       if (!room) {
         socket.emit('error', { message: 'Room not found or full' });
@@ -59,10 +75,6 @@ export function setupSocketHandlers(io: Server, gameManager: GameManager) {
       socket.join(room.id);
       socket.emit('room:joined', { room });
       io.to(room.id).emit('room:updated', { room });
-
-      if (room.players.length >= room.maxPlayers) {
-        gameManager.startGame(room.id, io);
-      }
     });
 
     socket.on('lobby:quickPlay', (data: { game: string }) => {
@@ -72,14 +84,45 @@ export function setupSocketHandlers(io: Server, gameManager: GameManager) {
         return;
       }
       socket.join(room.id);
-      socket.emit('room:joined', { room });
-      io.to(room.id).emit('room:updated', { room });
-      if (room.players.length >= room.maxPlayers) {
-        gameManager.startGame(room.id, io);
+      // Auto-ready the player
+      gameManager.setReady(room.id, user.id, true);
+      const updatedRoom = gameManager.getRoom(room.id);
+      socket.emit('room:joined', { room: updatedRoom });
+      io.to(room.id).emit('room:updated', { room: updatedRoom });
+      // Auto-start if all ready (bots are always ready)
+      gameManager.startGame(room.id, io);
+    });
+
+    // ── READY / START ──────────────────────────────────────────
+    socket.on('lobby:setReady', (data: { roomId: string; ready: boolean }) => {
+      const result = gameManager.setReady(data.roomId, user.id, data.ready);
+      if (result) {
+        io.to(data.roomId).emit('room:readyChanged', { userId: user.id, ready: data.ready, allReady: result.allReady });
+        io.to(data.roomId).emit('room:updated', { room: result.room });
       }
     });
 
-    // ── GAME ───────────────────────────────────────────────
+    socket.on('lobby:startGame', (data: { roomId: string }) => {
+      const room = gameManager.getRoom(data.roomId);
+      if (!room || room.hostId !== user.id) {
+        socket.emit('error', { message: 'Only the host can start the game' });
+        return;
+      }
+      // Auto-ready the host so the game can start even if the host didn't click Ready
+      gameManager.setReady(data.roomId, user.id, true);
+      gameManager.startGame(data.roomId, io);
+    });
+
+    // ── SPECTATE ───────────────────────────────────────────────
+    socket.on('game:spectate', (data: { roomId: string }) => {
+      const ok = gameManager.joinSpectator(user.id, data.roomId);
+      if (!ok) { socket.emit('error', { message: 'Cannot spectate this room' }); return; }
+      socket.join(data.roomId);
+      socket.emit('room:joined', { room: gameManager.getRoom(data.roomId) });
+      socket.to(data.roomId).emit('room:spectatorJoined', { userId: user.id, name: user.name });
+    });
+
+    // ── GAME ───────────────────────────────────────────────────
     socket.on('game:action', (data: { roomId: string; action: any }) => {
       gameManager.handleAction(data.roomId, user.id, data.action, io);
     });
@@ -98,7 +141,7 @@ export function setupSocketHandlers(io: Server, gameManager: GameManager) {
       gameManager.leaveRoom(user.id, data.roomId, io);
     });
 
-    // ── CHAT ───────────────────────────────────────────────
+    // ── CHAT ───────────────────────────────────────────────────
     socket.on('chat:message', (data: { roomId: string; message: string }) => {
       const msg = {
         id: Date.now().toString(),
@@ -119,9 +162,10 @@ export function setupSocketHandlers(io: Server, gameManager: GameManager) {
       });
     });
 
-    // ── DISCONNECT ─────────────────────────────────────────
+    // ── DISCONNECT ─────────────────────────────────────────────
     socket.on('disconnect', () => {
       console.log(`🔴 ${user.name} disconnected`);
+      presenceManager.disconnect(socket.id);
       gameManager.handleDisconnect(user.id, io);
     });
   });

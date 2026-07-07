@@ -4,7 +4,7 @@
 
 import { Card, Suit, RANK_ORDER, createDeck, shuffleDeck } from '../../cards/deck';
 
-export type CallBreakPhase = 'WAITING' | 'DEAL' | 'BIDDING' | 'TRICK_PLAY' | 'SCORING' | 'GAME_OVER';
+export type CallBreakPhase = 'WAITING' | 'DEAL' | 'BIDDING' | 'TRICK_PLAY' | 'TRICK_COMPLETE' | 'SCORING' | 'GAME_OVER';
 export const TRUMP_SUIT: Suit = 'spades';
 
 export interface CallBreakPlayer {
@@ -157,14 +157,27 @@ function resolveTrick(state: CallBreakState): CallBreakState {
     });
   }
 
+  const winner = updatedPlayers.find(p => p.id === winnerId)!;
   const winnerIdx = state.players.findIndex(p => p.id === winnerId);
   return {
     ...state,
+    phase: 'TRICK_COMPLETE',
     players: updatedPlayers,
     completedTricks: [...state.completedTricks, completedTrick],
+    currentTrick: { ...trick, winnerId },
+    currentPlayerIndex: winnerIdx,
+    lastAction: `${winner.name} wins trick`,
+  };
+}
+
+export function advanceCallBreakTrick(state: CallBreakState): CallBreakState {
+  const winnerId = state.currentTrick.winnerId!;
+  const winnerIdx = state.players.findIndex(p => p.id === winnerId);
+  return {
+    ...state,
+    phase: 'TRICK_PLAY',
     currentTrick: { cards: [], leadSuit: null },
     currentPlayerIndex: winnerIdx,
-    lastAction: `${updatedPlayers.find(p => p.id === winnerId)?.name} wins trick`,
   };
 }
 

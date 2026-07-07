@@ -9,11 +9,18 @@ interface AuthUser {
   email: string;
   avatar: string;
   elo: number;
+  highestElo: number;
   level: number;
   xp: number;
   wins: number;
   losses: number;
   gamesPlayed: number;
+  rankedWins: number;
+  rankedLosses: number;
+  rankedGames: number;
+  chips: number;
+  lifetimeEarned: number;
+  lifetimeSpent: number;
   achievements: string[];
   isGuest: boolean;
   token: string;
@@ -44,12 +51,19 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
           name: parsed.username || parsed.name || 'Guest',
           email: parsed.email || '',
           avatar: parsed.avatar || `https://api.dicebear.com/7.x/avataaars/svg?seed=${parsed.id || 'guest'}`,
-          elo: parsed.elo || 1000,
+          elo: parsed.elo || 800,
+          highestElo: parsed.highestElo || parsed.elo || 800,
           level: parsed.level || 1,
           xp: parsed.xp || 0,
           wins: parsed.wins || 0,
           losses: parsed.losses || 0,
           gamesPlayed: parsed.gamesPlayed || 0,
+          rankedWins: parsed.rankedWins || 0,
+          rankedLosses: parsed.rankedLosses || 0,
+          rankedGames: parsed.rankedGames || 0,
+          chips: parsed.chips ?? 500,
+          lifetimeEarned: parsed.lifetimeEarned || 0,
+          lifetimeSpent: parsed.lifetimeSpent || 0,
           achievements: parsed.achievements || [],
           isGuest: parsed.guest !== undefined ? parsed.guest : (parsed.isGuest !== undefined ? parsed.isGuest : true),
           token: parsed.token || parsed.id || 'guest_token'
@@ -93,17 +107,24 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
         level: 1
       };
       localStorage.setItem("cardsKingUser", JSON.stringify(guestUser));
-      const mappedUser = {
+      const mappedUser: AuthUser = {
         id: guestId,
         name: 'Guest',
         email: '',
         avatar: `https://api.dicebear.com/7.x/avataaars/svg?seed=${guestId}`,
-        elo: 1000,
+        elo: 800,
+        highestElo: 800,
         level: 1,
         xp: 0,
         wins: 0,
         losses: 0,
         gamesPlayed: 0,
+        rankedWins: 0,
+        rankedLosses: 0,
+        rankedGames: 0,
+        chips: 500,
+        lifetimeEarned: 0,
+        lifetimeSpent: 0,
         achievements: [],
         isGuest: true,
         token: guestId

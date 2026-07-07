@@ -3,8 +3,11 @@ import { createServer } from 'http';
 import { Server } from 'socket.io';
 import cors from 'cors';
 import { authRouter } from './auth/authRoutes';
+import { economyRouter } from './routes/economy';
 import { setupSocketHandlers } from './socket/handlers';
 import { GameManager } from './games/GameManager';
+import { userStore } from './auth/userStore';
+import { MIN_ELO, MAX_ELO } from './services/elo';
 
 const app = express();
 const httpServer = createServer(app);
@@ -20,41 +23,54 @@ const io = new Server(httpServer, {
 app.use(cors({ origin: ['http://localhost:5173', 'http://localhost:3000'], credentials: true }));
 app.use(express.json());
 
-// REST API
 app.use('/api/auth', authRouter);
+app.use('/api/economy', economyRouter);
 
 app.get('/api/health', (_req, res) => {
   res.json({ status: 'ok', time: new Date().toISOString() });
 });
 
-app.get('/api/leaderboard', (_req, res) => {
-  const { userStore } = require('./auth/userStore');
-  const users = userStore.getAllUsers()
-    .sort((a: any, b: any) => b.elo - a.elo)
-    .slice(0, 50)
-    .map((u: any, i: number) => ({
-      rank: i + 1,
-      id: u.id,
-      name: u.name,
-      avatar: u.avatar,
-      elo: u.elo,
-      level: u.level,
-      wins: u.wins,
-      gamesPlayed: u.gamesPlayed,
-      tier: getEloTier(u.elo),
-    }));
-  res.json(users);
-});
+const TIER_THRESHOLDS = [
+  { name: 'diamond', min: 1700 },
+  { name: 'platinum', min: 1500 },
+  { name: 'gold', min: 1300 },
+  { name: 'silver', min: 1100 },
+  { name: 'bronze', min: MIN_ELO },
+];
 
-function getEloTier(elo: number) {
-  if (elo >= 2100) return 'diamond';
-  if (elo >= 1800) return 'platinum';
-  if (elo >= 1500) return 'gold';
-  if (elo >= 1200) return 'silver';
+function getEloTier(elo: number): string {
+  for (const t of TIER_THRESHOLDS) {
+    if (elo >= t.min) return t.name;
+  }
   return 'bronze';
 }
 
-// Socket.io
+app.get('/api/leaderboard', (_req, res) => {
+  const users = userStore.getAllUsers()
+    .filter(u => !u.isGuest)
+    .sort((a, b) => b.elo - a.elo)
+    .slice(0, 100)
+    .map((u, i) => {
+      const winRate = u.gamesPlayed > 0 ? Math.round((u.wins / u.gamesPlayed) * 100) : 0;
+      return {
+        rank: i + 1,
+        id: u.id,
+        name: u.name,
+        avatar: u.avatar,
+        elo: u.elo,
+        highestElo: u.highestElo,
+        level: u.level,
+        wins: u.wins,
+        losses: u.losses,
+        gamesPlayed: u.gamesPlayed,
+        winRate,
+        tier: getEloTier(u.elo),
+        chips: u.chips,
+      };
+    });
+  res.json(users);
+});
+
 const gameManager = new GameManager(io);
 setupSocketHandlers(io, gameManager);
 

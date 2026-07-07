@@ -93,6 +93,10 @@ export default function ProfilePage() {
                   <div className="text-white/40 text-xs mb-1 uppercase tracking-wider">Record</div>
                   <div className="text-white font-bold"><span className="text-green-400">{user.wins}</span> - <span className="text-red-400">{user.losses}</span></div>
                 </div>
+                <div className="bg-black/30 px-4 py-2 rounded-xl border border-white/5">
+                  <div className="text-white/40 text-xs mb-1 uppercase tracking-wider">Royal Chips</div>
+                  <div className="text-yellow-400 font-bold">👑 {user.chips ?? 0}</div>
+                </div>
               </div>
             </div>
             

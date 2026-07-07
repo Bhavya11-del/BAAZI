@@ -4,7 +4,7 @@
 
 import { Card, Suit, RANK_ORDER, createDeck, shuffleDeck } from '../../cards/deck';
 
-export type MendicotPhase = 'WAITING' | 'DEAL' | 'TRUMP_SELECTION' | 'TRICK_PLAY' | 'SCORING' | 'GAME_OVER';
+export type MendicotPhase = 'WAITING' | 'DEAL' | 'TRUMP_SELECTION' | 'TRICK_PLAY' | 'TRICK_COMPLETE' | 'SCORING' | 'GAME_OVER';
 
 export interface MendicotPlayer {
   id: string;
@@ -56,10 +56,10 @@ const TEN_IDS = new Set(['10_spades', '10_hearts', '10_diamonds', '10_clubs']);
 /**
  * Returns the subset of cards the player is legally allowed to play.
  *
- * Rules:
+ * Official Mendicot (Rang) rules:
  *  1. If a suit has been led → MUST follow suit if player has any cards of that suit.
- *  2. If void in led suit → may play any card (trump optional, not mandatory).
- *  3. If leading (no lead suit) → any card.
+ *  2. If void in led suit → player MAY play a trump card OR discard any other suit.
+ *  3. If leading (no lead suit) → any card is legal.
  */
 export function getLegalMendicotCards(
   player: MendicotPlayer,
@@ -78,7 +78,7 @@ export function getLegalMendicotCards(
   const suitCards = cards.filter(c => c.suit === leadSuit);
   if (suitCards.length > 0) return suitCards;
 
-  // Void in lead suit — any card is legal (trump is never forced in Mendicot)
+  // Void in lead suit — may play trump OR discard any other card
   return cards;
 }
 
@@ -260,20 +260,35 @@ function resolveMendicotTrick(state: MendicotState): MendicotState {
     });
   }
 
-  // Winner leads the next trick — all their cards are legal (no lead suit yet)
+  // Trick complete — keep cards visible, show result
+  const trickWinnerName = updatedPlayers.find(p => p.id === winnerId)!.name;
   const winnerIdx = state.players.findIndex(p => p.id === winnerId);
-  const winnerPlayer = updatedPlayers[winnerIdx];
-  const emptyTrick: MendicotTrick = { cards: [], leadSuit: null };
-  const legalCardIds = winnerPlayer.cards.map(c => c.id); // all cards legal when leading
 
   return {
     ...state,
+    phase: 'TRICK_COMPLETE',
     players: updatedPlayers,
     teams: updatedTeams,
     completedTricks: [...state.completedTricks, completedTrick],
+    currentTrick: { ...trick, winnerId },
+    currentPlayerIndex: winnerIdx,
+    lastAction: `${trickWinnerName} wins trick`,
+    legalCardIds: [],
+  };
+}
+
+export function advanceMendicotTrick(state: MendicotState): MendicotState {
+  const winnerId = state.currentTrick.winnerId!;
+  const winnerIdx = state.players.findIndex(p => p.id === winnerId);
+  const winnerPlayer = state.players[winnerIdx];
+  const emptyTrick: MendicotTrick = { cards: [], leadSuit: null };
+  const legalCardIds = winnerPlayer.cards.map(c => c.id);
+
+  return {
+    ...state,
+    phase: 'TRICK_PLAY',
     currentTrick: emptyTrick,
     currentPlayerIndex: winnerIdx,
-    lastAction: `${winner.name} wins trick`,
     legalCardIds,
   };
 }

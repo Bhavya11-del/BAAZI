@@ -17,52 +17,9 @@
     <script type="module" src="/src/main.tsx"></script>
     <script>
       function startGuestMode() {
-        console.log("Guest button clicked");
-        const guestUser = {
-          id: "guest_" + Date.now(),
-          username: "Guest",
-          guest: true,
-          coins: 10000,
-          level: 1
-        };
-
-        localStorage.setItem(
-          "cardsKingUser",
-          JSON.stringify(guestUser)
-        );
-
-        localStorage.setItem(
-          "showWelcome",
-          "true"
-        );
-
-        window.location.href = "lobby.html";
+        const event = new CustomEvent('guest-login-request');
+        document.dispatchEvent(event);
       }
-
-      document.addEventListener("DOMContentLoaded", () => {
-        const setupGuestButton = () => {
-          const guestBtn = document.getElementById("guest-login-btn");
-          if (guestBtn && !guestBtn.dataset.bound) {
-            guestBtn.dataset.bound = "true";
-            console.log("Guest button found:", !!guestBtn);
-            guestBtn.addEventListener("click", (e) => {
-              e.preventDefault();
-              try {
-                startGuestMode();
-              } catch(err) {
-                console.error(err);
-              }
-            });
-          }
-        };
-
-        setupGuestButton();
-
-        const observer = new MutationObserver(() => {
-          setupGuestButton();
-        });
-        observer.observe(document.body, { childList: true, subtree: true });
-      });
     </script>
   </body>
 </html>

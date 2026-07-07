@@ -70,12 +70,11 @@ export default function HomePage() {
     if (!user) { navigate('/login'); return; }
     setLoadingGame(gameId);
     if (!socket) connect(user.token);
-    setTimeout(() => {
-      navigate(`/game/${gameId}`);
-    }, 300);
+    navigate(`/game/${gameId}`);
   };
 
   const handleGuestPlay = async (gameId: string) => {
+    setLoadingGame(gameId);
     await loginAsGuest();
     navigate(`/game/${gameId}`);
   };

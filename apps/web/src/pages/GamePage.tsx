@@ -6,21 +6,21 @@ import { useSocketStore } from '../stores/socketStore';
 import { useGameStore } from '../stores/gameStore';
 import PlayingCard from '../components/PlayingCard';
 import toast from 'react-hot-toast';
-import { MessageSquare, X, Send, RotateCcw, LogOut, Crown, Eye, EyeOff } from 'lucide-react';
+import { MessageSquare, X, Send, RotateCcw, LogOut, Eye, Home, RefreshCw, AlertCircle } from 'lucide-react';
 
 const EMOTES = ['👍', '😄', '🎉', '😮', '👏', '🤔', '😎', '🃏'];
 const SUIT_SYMBOLS: Record<string, string> = { spades: '♠', hearts: '♥', diamonds: '♦', clubs: '♣' };
 const SUIT_COLORS: Record<string, string> = { spades: 'text-gray-900', hearts: 'text-red-600', diamonds: 'text-red-600', clubs: 'text-gray-900' };
 const RANK_NAMES: Record<string, string> = {
   trail: '🎯 Trail (Three of a Kind)', pureSequence: '🌟 Pure Sequence', sequence: '📈 Sequence',
-  color: '🎨 Color (Flush)', pair: '👥 Pair', highCard: '📊 High Card'
+  color: '🎨 Color (Flush)', pair: '👥 Pair', highCard: '📊 High Card',
 };
 
 export default function GamePage() {
   const { gameType } = useParams<{ gameType: string }>();
   const navigate = useNavigate();
   const { user, loginAsGuest } = useAuthStore();
-  const { socket, connect } = useSocketStore();
+  const { socket, connect, connected, connectError } = useSocketStore();
   const { gameState, room, roomId, setGameState, setRoom, setRoomId, addChatMessage, chatMessages, clearGame } = useGameStore();
 
   const [showChat, setShowChat] = useState(false);
@@ -30,66 +30,193 @@ export default function GamePage() {
   const [showResult, setShowResult] = useState(false);
   const [bidValue, setBidValue] = useState(1);
   const [localRoomId, setLocalRoomId] = useState<string | null>(null);
+  const [isSpectator, setIsSpectator] = useState(false);
+  const [turnRemaining, setTurnRemaining] = useState<number | null>(null);
+  const [reconnectAttempted, setReconnectAttempted] = useState(false);
+  const [matchmakingTimeout, setMatchmakingTimeout] = useState(false);
+  const [matchmakingRetries, setMatchmakingRetries] = useState(0);
+  const [findingStatus, setFindingStatus] = useState<'connecting' | 'matchmaking' | 'timeout' | 'error' | 'joined'>('connecting');
+  const quickPlayEmitted = useRef(false);
+  const matchmakingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
+  const turnTimerRef = useRef<any>(null);
 
   useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [chatMessages]);
 
-  // Init: connect + join quick game
+  // Reconnection: check if we were in a game
   useEffect(() => {
-    const init = async () => {
-      let u = user;
-      if (!u) { await loginAsGuest(); return; }
-      if (!socket) { connect(u.token); return; }
+    const savedRoomId = localStorage.getItem('cardkings_lastRoom');
+    const savedGameType = localStorage.getItem('cardkings_lastGame');
+    if (savedRoomId && savedGameType && !reconnectAttempted) {
+      setReconnectAttempted(true);
+      setLocalRoomId(savedRoomId);
+    }
+  }, []);
 
-      // If no room yet, quick-join
-      if (!roomId) {
-        socket.emit('lobby:quickPlay', { game: gameType });
+  // Init
+  useEffect(() => {
+    if (!user) { loginAsGuest(); return; }
+    if (!socket) { connect(user.token); return; }
+    if (!connected) {
+      setFindingStatus('connecting');
+      return;
+    }
+
+    // Try reconnection first
+    const savedRoomId = localStorage.getItem('cardkings_lastRoom');
+    if (savedRoomId && !roomId) {
+      setFindingStatus('connecting');
+      socket.emit('game:getState', { roomId: savedRoomId });
+    }
+
+    // If no room at all, quick-join via lobby (only once)
+    if (!roomId && !savedRoomId && !quickPlayEmitted.current) {
+      quickPlayEmitted.current = true;
+      setFindingStatus('matchmaking');
+      socket.emit('lobby:quickPlay', { game: gameType });
+    }
+
+    // If we already have a roomId (from lobby navigation), request current state
+    if (roomId && !gameState) {
+      socket.emit('game:getState', { roomId });
+    }
+
+    const onRoomJoined = ({ room: r }: any) => {
+      setRoom(r); setRoomId(r.id); setLocalRoomId(r.id);
+      localStorage.setItem('cardkings_lastRoom', r.id);
+      localStorage.setItem('cardkings_lastGame', gameType || '');
+      setIsSpectator(false);
+      setFindingStatus('joined');
+      if (matchmakingTimerRef.current) {
+        clearTimeout(matchmakingTimerRef.current);
+        matchmakingTimerRef.current = null;
       }
-
-      socket.on('room:joined', ({ room: r }: any) => {
-        setRoom(r); setRoomId(r.id); setLocalRoomId(r.id);
-      });
-      socket.on('room:updated', ({ room: r }: any) => setRoom(r));
-      socket.on('game:started', () => toast('🎮 Game started!', { icon: '🃏' }));
-      socket.on('game:state', (state: any) => {
-        setGameState(state);
-        if (state.phase === 'RESULT' || state.phase === 'GAME_OVER' || state.phase === 'SCORING') {
-          setShowResult(true);
-        } else {
-          setShowResult(false);
-        }
-      });
-      socket.on('game:roundEnd', ({ state }: any) => { setGameState(state); setShowResult(true); });
-      socket.on('game:finished', ({ state }: any) => { setGameState(state); setShowResult(true); });
-      socket.on('chat:message', (msg: any) => addChatMessage(msg));
-      socket.on('chat:emote', (data: any) => {
-        toast(`${data.name}: ${data.emote}`, { duration: 2000, icon: undefined });
-      });
-      socket.on('error', ({ message }: any) => toast.error(message));
-
-      return () => {
-        socket.off('room:joined'); socket.off('room:updated');
-        socket.off('game:started'); socket.off('game:state');
-        socket.off('game:roundEnd'); socket.off('game:finished');
-        socket.off('chat:message'); socket.off('chat:emote');
-        socket.off('error');
-      };
+      setMatchmakingTimeout(false);
     };
-    init();
-  }, [user, socket, gameType]);
+
+    const onRoomReconnected = ({ room: r, gameState: gs }: any) => {
+      setRoom(r); setRoomId(r.id); setLocalRoomId(r.id);
+      if (gs) setGameState(gs);
+      localStorage.setItem('cardkings_lastRoom', r.id);
+      toast.success('Reconnected to game!');
+      setFindingStatus('joined');
+      if (matchmakingTimerRef.current) {
+        clearTimeout(matchmakingTimerRef.current);
+        matchmakingTimerRef.current = null;
+      }
+      setMatchmakingTimeout(false);
+    };
+
+    const onRoomUpdated = ({ room: r }: any) => setRoom(r);
+    const onGameStarted = () => toast('🎮 Game started!', { icon: '🃏' });
+
+    const onGameState = (state: any) => {
+      setGameState(state);
+      setIsSpectator(!!state.isSpectator);
+      if (state.phase === 'RESULT' || state.phase === 'GAME_OVER' || state.phase === 'SCORING') {
+        setShowResult(true);
+      } else {
+        setShowResult(false);
+      }
+      if (state.turnTimer) {
+        setTurnRemaining(state.turnTimer.remaining);
+      } else {
+        setTurnRemaining(null);
+      }
+    };
+
+    const onTurnTimer = ({ userId: tid, duration, startedAt }: any) => {
+      if (tid !== user?.id) return;
+      const elapsed = Date.now() - startedAt;
+      setTurnRemaining(Math.max(0, duration - elapsed));
+    };
+
+    const onTimeout = ({ userId: tid }: any) => {
+      if (tid === user?.id) toast.error('Time\'s up! Action taken.');
+      setTurnRemaining(null);
+    };
+
+    const onRoundEnd = ({ state }: any) => { setGameState(state); setShowResult(true); };
+    const onFinished = ({ state }: any) => {
+      setGameState(state); setShowResult(true);
+      localStorage.removeItem('cardkings_lastRoom');
+      localStorage.removeItem('cardkings_lastGame');
+    };
+
+    const onChatMessage = (msg: any) => addChatMessage(msg);
+    const onChatEmote = (data: any) => {
+      toast(`${data.name}: ${data.emote}`, { duration: 2000, icon: undefined });
+    };
+    const onError = ({ message }: any) => {
+      toast.error(message);
+      if (message?.toLowerCase().includes('room not found') || message?.toLowerCase().includes('no rooms')) {
+        setFindingStatus('error');
+      }
+    };
+
+    socket.on('room:joined', onRoomJoined);
+    socket.on('room:reconnected', onRoomReconnected);
+    socket.on('room:updated', onRoomUpdated);
+    socket.on('game:started', onGameStarted);
+    socket.on('game:state', onGameState);
+    socket.on('game:turnTimer', onTurnTimer);
+    socket.on('game:timeout', onTimeout);
+    socket.on('game:roundEnd', onRoundEnd);
+    socket.on('game:finished', onFinished);
+    socket.on('chat:message', onChatMessage);
+    socket.on('chat:emote', onChatEmote);
+    socket.on('error', onError);
+
+    // Set 10-second matchmaking timeout
+    if (findingStatus === 'matchmaking' && !matchmakingTimerRef.current) {
+      matchmakingTimerRef.current = setTimeout(() => {
+        setMatchmakingTimeout(true);
+        setFindingStatus('timeout');
+        toast.error('Matchmaking is taking longer than expected. You can retry or cancel.');
+      }, 10000);
+    }
+
+    return () => {
+      socket.off('room:joined', onRoomJoined);
+      socket.off('room:reconnected', onRoomReconnected);
+      socket.off('room:updated', onRoomUpdated);
+      socket.off('game:started', onGameStarted);
+      socket.off('game:state', onGameState);
+      socket.off('game:turnTimer', onTurnTimer);
+      socket.off('game:timeout', onTimeout);
+      socket.off('game:roundEnd', onRoundEnd);
+      socket.off('game:finished', onFinished);
+      socket.off('chat:message', onChatMessage);
+      socket.off('chat:emote', onChatEmote);
+      socket.off('error', onError);
+      if (matchmakingTimerRef.current) {
+        clearTimeout(matchmakingTimerRef.current);
+        matchmakingTimerRef.current = null;
+      }
+    };
+  }, [user, socket, connected, gameType, findingStatus]);
+
+  // Live turn timer countdown
+  useEffect(() => {
+    if (turnRemaining === null || turnRemaining <= 0) return;
+    const interval = setInterval(() => {
+      setTurnRemaining(prev => Math.max(0, (prev || 0) - 1000));
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [turnRemaining !== null]);
 
   const rid = localRoomId || roomId;
   const myPlayer = gameState?.players?.find((p: any) => p.id === user?.id);
   const isMyTurn = (() => {
-    if (!gameState || !user) return false;
+    if (!gameState || !user || isSpectator) return false;
     if (gameType === 'call-break' && gameState.phase === 'BIDDING')
       return gameState.players[gameState.biddingPlayerIndex]?.id === user.id;
     return gameState.players[gameState.currentPlayerIndex]?.id === user.id;
   })();
 
   const sendAction = (action: any) => {
-    if (!rid) return;
-    socket?.emit('game:action', { roomId: rid, action });
+    if (!rid || isSpectator) return;
+    socket?.emit('game:action', { roomId: rid, action: { ...action, seq: Date.now() } });
   };
 
   const sendChat = () => {
@@ -107,6 +234,8 @@ export default function GamePage() {
   const handleLeave = () => {
     if (rid) socket?.emit('game:leave', { roomId: rid });
     clearGame();
+    localStorage.removeItem('cardkings_lastRoom');
+    localStorage.removeItem('cardkings_lastGame');
     navigate('/lobby');
   };
 
@@ -116,27 +245,141 @@ export default function GamePage() {
     setShowResult(false);
   };
 
-  // ── TEEN PATTI ACTIONS ──────────────────────────────────────
   const tpFold = () => sendAction({ type: 'fold' });
   const tpCall = () => sendAction({ type: 'call' });
   const tpRaise = (amount: number) => sendAction({ type: 'raise', amount });
   const tpShow = () => sendAction({ type: 'show' });
   const tpSeeCards = () => sendAction({ type: 'seeCards' });
-
-  // ── CALL BREAK ACTIONS ──────────────────────────────────────
   const cbBid = (bid: number) => sendAction({ type: 'bid', bid });
   const cbPlayCard = (card: any) => sendAction({ type: 'playCard', card });
-
-  // ── MENDICOT ACTIONS ────────────────────────────────────────
   const mPlayCard = (card: any) => sendAction({ type: 'playCard', card });
 
   if (!gameState && !room) {
     return (
       <div className="min-h-screen flex items-center justify-center">
-        <div className="text-center">
-          <div className="text-6xl mb-4 animate-float">🃏</div>
-          <div className="font-cinzel text-xl text-gold mb-2">Finding a table...</div>
-          <div className="thinking-dots"><span/><span/><span/></div>
+        <div className="text-center max-w-md mx-auto px-4">
+
+          {findingStatus === 'connecting' && !connectError && (
+            <>
+              <div className="text-6xl mb-4 animate-float">🃏</div>
+              <div className="font-cinzel text-xl text-gold mb-2">Connecting...</div>
+              <div className="thinking-dots"><span/><span/><span/></div>
+              <p className="text-white/30 text-sm mt-4">Establishing secure connection</p>
+            </>
+          )}
+
+          {findingStatus === 'connecting' && connectError && (
+            <>
+              <div className="text-6xl mb-4">🔌</div>
+              <div className="font-cinzel text-xl text-gold mb-2">Connection issue</div>
+              <p className="text-white/50 text-sm mb-6">
+                Could not connect to game server. Please check that the server is running.
+              </p>
+              <div className="flex flex-col sm:flex-row gap-3 justify-center">
+                <button
+                  onClick={() => {
+                    connect(user?.token);
+                  }}
+                  className="btn-gold text-sm !px-6 !py-2.5 flex items-center justify-center gap-2"
+                >
+                  <RefreshCw className="w-4 h-4" /> Reconnect
+                </button>
+                <button onClick={() => navigate('/lobby')} className="btn-ghost text-sm !px-6 !py-2.5">
+                  Back to Lobby
+                </button>
+              </div>
+            </>
+          )}
+
+          {findingStatus === 'matchmaking' && !matchmakingTimeout && (
+            <>
+              <div className="text-6xl mb-4 animate-float">🃏</div>
+              <div className="font-cinzel text-xl text-gold mb-2">Finding a table...</div>
+              <div className="thinking-dots"><span/><span/><span/></div>
+              <p className="text-white/30 text-sm mt-4">Searching for available rooms</p>
+              <button
+                onClick={() => {
+                  if (matchmakingTimerRef.current) {
+                    clearTimeout(matchmakingTimerRef.current);
+                    matchmakingTimerRef.current = null;
+                  }
+                  quickPlayEmitted.current = false;
+                  navigate('/lobby');
+                }}
+                className="btn-ghost text-sm mt-6 !px-6 !py-2"
+              >
+                Cancel
+              </button>
+            </>
+          )}
+
+          {findingStatus === 'timeout' && (
+            <>
+              <div className="text-6xl mb-4">⏱️</div>
+              <div className="font-cinzel text-xl text-gold mb-2">Taking longer than usual</div>
+              <p className="text-white/50 text-sm mb-6">
+                No rooms found yet. We can retry or create a new room for you.
+              </p>
+              <div className="flex flex-col sm:flex-row gap-3 justify-center">
+                <button
+                  onClick={() => {
+                    setMatchmakingTimeout(false);
+                    setMatchmakingRetries(prev => prev + 1);
+                    setFindingStatus('matchmaking');
+                    quickPlayEmitted.current = false;
+                    if (socket) {
+                      quickPlayEmitted.current = true;
+                      setFindingStatus('matchmaking');
+                      socket.emit('lobby:quickPlay', { game: gameType });
+                    }
+                  }}
+                  className="btn-gold text-sm !px-6 !py-2.5 flex items-center justify-center gap-2"
+                >
+                  <RefreshCw className="w-4 h-4" /> Retry
+                </button>
+                <button
+                  onClick={() => {
+                    quickPlayEmitted.current = false;
+                    navigate('/lobby');
+                  }}
+                  className="btn-ghost text-sm !px-6 !py-2.5 flex items-center justify-center gap-2"
+                >
+                  <Home className="w-4 h-4" /> Back to Lobby
+                </button>
+              </div>
+            </>
+          )}
+
+          {findingStatus === 'error' && (
+            <>
+              <div className="text-6xl mb-4">⚠️</div>
+              <div className="font-cinzel text-xl text-gold mb-2">Could not join game</div>
+              <p className="text-white/50 text-sm mb-6">
+                An error occurred while finding a table. Please try again.
+              </p>
+              <div className="flex flex-col sm:flex-row gap-3 justify-center">
+                <button
+                  onClick={() => {
+                    setFindingStatus('matchmaking');
+                    setMatchmakingTimeout(false);
+                    quickPlayEmitted.current = false;
+                    if (socket) {
+                      quickPlayEmitted.current = true;
+                      socket.emit('lobby:quickPlay', { game: gameType });
+                    }
+                    setMatchmakingRetries(prev => prev + 1);
+                  }}
+                  className="btn-gold text-sm !px-6 !py-2.5 flex items-center justify-center gap-2"
+                >
+                  <RefreshCw className="w-4 h-4" /> Try Again
+                </button>
+                <button onClick={() => navigate('/lobby')} className="btn-ghost text-sm !px-6 !py-2.5">
+                  Back to Lobby
+                </button>
+              </div>
+            </>
+          )}
+
         </div>
       </div>
     );
@@ -146,7 +389,6 @@ export default function GamePage() {
 
   return (
     <div className="min-h-screen pt-16 flex flex-col relative overflow-hidden">
-      {/* Felt Table Background */}
       <div className="absolute inset-0 felt-table" />
       <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_center,rgba(0,0,0,0)_0%,rgba(0,0,0,0.4)_100%)]" />
 
@@ -154,19 +396,26 @@ export default function GamePage() {
       <div className="relative z-10 flex items-center justify-between px-4 py-2 border-b border-gold/10 bg-black/30 backdrop-blur-sm">
         <div className="flex items-center gap-3">
           <div className="font-cinzel text-gold font-bold text-sm">
-            {{  'teen-patti': '🃏 Teen Patti', 'call-break': '♠️ Call Break', 'mendicot': '🔟 Mendicot' }[gameType!]}
+            {{ 'teen-patti': '🃏 Teen Patti', 'call-break': '♠️ Call Break', 'mendicot': '🔟 Mendicot' }[gameType!]}
           </div>
-          {rid && <div className="text-white/30 text-xs font-mono">#{rid.slice(0,8)}</div>}
+          {rid && <div className="text-white/30 text-xs font-mono">#{rid.slice(0, 8)}</div>}
           {gameState?.phase && (
             <span className="text-xs bg-gold/20 text-gold px-2 py-0.5 rounded-full border border-gold/30">
               {gameState.phase}
             </span>
           )}
+          {isSpectator && <span className="text-xs bg-blue-500/20 text-blue-400 px-2 py-0.5 rounded-full border border-blue-500/30">Spectator</span>}
         </div>
         <div className="flex items-center gap-2">
+          {/* Turn timer */}
+          {isMyTurn && turnRemaining !== null && turnRemaining > 0 && (
+            <div className={`text-sm font-bold ${turnRemaining < 10000 ? 'text-red-400' : 'text-gold'}`}>
+              {Math.ceil(turnRemaining / 1000)}s
+            </div>
+          )}
           <button onClick={() => setShowChat(s => !s)} className="btn-ghost !px-3 !py-1.5 text-sm relative">
             <MessageSquare className="w-4 h-4" />
-            {chatMessages.length > 0 && <span className="absolute -top-1 -right-1 w-2 h-2 bg-gold rounded-full"/>}
+            {chatMessages.length > 0 && <span className="absolute -top-1 -right-1 w-2 h-2 bg-gold rounded-full" />}
           </button>
           <button onClick={handleLeave} className="btn-danger !px-3 !py-1.5 text-sm">
             <LogOut className="w-4 h-4" />
@@ -176,7 +425,6 @@ export default function GamePage() {
 
       {/* Game Table */}
       <div className="relative z-10 flex-1 flex flex-col items-center justify-between p-4 max-w-5xl mx-auto w-full">
-
         {/* Opponents (top) */}
         <div className="flex justify-center gap-4 w-full flex-wrap">
           {players.filter((p: any) => p.id !== user?.id).slice(0, 3).map((p: any, i: number) => (
@@ -184,13 +432,13 @@ export default function GamePage() {
           ))}
         </div>
 
-        {/* Center - Trick/Pot/Game Info */}
+        {/* Center */}
         <div className="flex-1 flex items-center justify-center w-full my-4">
           <CenterArea gameState={gameState} gameType={gameType!} />
         </div>
 
-        {/* My Hand (bottom) */}
-        {myPlayer && (
+        {/* My Hand */}
+        {myPlayer && !isSpectator && (
           <div className="w-full">
             <MyHand
               player={myPlayer} gameState={gameState} gameType={gameType!}
@@ -199,6 +447,13 @@ export default function GamePage() {
               onCBBid={cbBid} onCBPlayCard={cbPlayCard} onMPlayCard={mPlayCard}
               bidValue={bidValue} setBidValue={setBidValue}
             />
+          </div>
+        )}
+
+        {/* Spectator message */}
+        {isSpectator && (
+          <div className="text-center text-white/40 text-sm glass-panel px-6 py-3">
+            <Eye className="w-4 h-4 inline mr-2" /> You are spectating this game
           </div>
         )}
       </div>
@@ -281,7 +536,6 @@ function PlayerSlot({ player, gameState, gameType, position, index }: any) {
         <motion.div animate={{ scale: [1, 1.2, 1] }} transition={{ repeat: Infinity, duration: 1.2 }}
           className="absolute -top-1 -right-1 w-3 h-3 bg-gold rounded-full z-10" />
       )}
-      {/* Cards (face down for opponents) */}
       <div className="flex gap-1">
         {Array.from({ length: Math.min(cardCount, 5) }).map((_, i) => (
           <div key={i} className="w-8 h-11 rounded-md card-back border border-gold/20"
@@ -290,11 +544,11 @@ function PlayerSlot({ player, gameState, gameType, position, index }: any) {
         {cardCount > 5 && <div className="text-white/40 text-xs self-end">+{cardCount - 5}</div>}
       </div>
 
-      {/* Avatar + name */}
       <div className={`glass-panel px-3 py-2 flex items-center gap-2 ${isCurrentTurn ? 'border-gold/60 shadow-gold' : ''}`}>
         <div className="relative">
           <img src={player.avatar} className="w-8 h-8 rounded-full" alt="" />
           {player.isBot && <div className="absolute -bottom-0.5 -right-0.5 w-3 h-3 bg-blue-500 rounded-full border border-felt-darker text-[6px] flex items-center justify-center text-white">AI</div>}
+          {!player.connected && !player.isBot && <div className="absolute -bottom-0.5 -right-0.5 w-3 h-3 bg-red-500 rounded-full border border-felt-darker" />}
         </div>
         <div>
           <div className="text-white text-xs font-semibold leading-none">{player.name}</div>
@@ -344,28 +598,45 @@ function CenterArea({ gameState, gameType }: any) {
 
       {(gameType === 'call-break' || gameType === 'mendicot') && (
         <div className="w-full">
-          {/* Current trick cards */}
-          <div className="glass-panel p-4 mb-3">
-            <div className="text-white/40 text-xs text-center mb-3">Current Trick</div>
+          <div className="glass-panel p-4 mb-3 relative">
+            <div className="text-white/40 text-xs text-center mb-3">
+              {gameState.phase === 'TRICK_COMPLETE' ? 'Trick Complete' : 'Current Trick'}
+            </div>
             <div className="flex justify-center gap-3 min-h-[80px] items-center flex-wrap">
-              {(gameState.currentTrick?.cards || []).map((entry: any, i: number) => (
-                <div key={i} className="flex flex-col items-center gap-1">
-                  <PlayingCard
-                    suit={entry.card.suit} rank={entry.card.rank}
-                    size="sm" dealDelay={i * 0.1}
-                  />
-                  <div className="text-white/40 text-xs truncate max-w-[50px]">
-                    {gameState.players.find((p: any) => p.id === entry.playerId)?.name?.split(' ')[0]}
+              {(gameState.currentTrick?.cards || []).map((entry: any, i: number) => {
+                const isWinner = gameState.phase === 'TRICK_COMPLETE' && gameState.currentTrick?.winnerId === entry.playerId;
+                return (
+                  <div key={i} className={`flex flex-col items-center gap-1 ${isWinner ? 'scale-110' : ''}`}>
+                    <div className="relative">
+                      <PlayingCard suit={entry.card.suit} rank={entry.card.rank} size="sm" dealDelay={i * 0.1} />
+                      {isWinner && (
+                        <div className="absolute -top-2 -right-2 w-5 h-5 bg-gold rounded-full flex items-center justify-center text-[10px] text-felt-darker font-bold shadow-gold">
+                          👑
+                        </div>
+                      )}
+                    </div>
+                    <div className={`text-xs truncate max-w-[50px] ${isWinner ? 'text-gold font-bold' : 'text-white/40'}`}>
+                      {gameState.players.find((p: any) => p.id === entry.playerId)?.name?.split(' ')[0]}
+                    </div>
                   </div>
-                </div>
-              ))}
+                );
+              })}
               {(gameState.currentTrick?.cards || []).length === 0 && (
                 <div className="text-white/20 text-sm">Play a card to start</div>
               )}
             </div>
+            {gameState.phase === 'TRICK_COMPLETE' && gameState.currentTrick?.winnerId && (
+              <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}
+                className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                <div className="bg-black/60 backdrop-blur-sm rounded-xl px-6 py-2 border border-gold/40 shadow-gold">
+                  <span className="text-gold font-bold text-sm">
+                    🏆 {gameState.players.find((p: any) => p.id === gameState.currentTrick.winnerId)?.name?.split(' ')[0]} wins trick!
+                  </span>
+                </div>
+              </motion.div>
+            )}
           </div>
 
-          {/* Scores */}
           <div className="grid grid-cols-2 gap-3">
             {gameType === 'call-break' && (
               <>
@@ -422,7 +693,6 @@ function MyHand({ player, gameState, gameType, isMyTurn, onTeenPattiAction, onCB
 
   return (
     <div className="flex flex-col items-center gap-3 w-full">
-      {/* My info */}
       <div className={`glass-panel px-4 py-2 flex items-center gap-3 ${isMyTurn ? 'border-gold/60 shadow-gold animate-pulse-gold' : ''}`}>
         <img src={player.avatar} className="w-8 h-8 rounded-full" alt="" />
         <div>
@@ -439,11 +709,10 @@ function MyHand({ player, gameState, gameType, isMyTurn, onTeenPattiAction, onCB
         </div>
       </div>
 
-      {/* Cards */}
       <div className="flex flex-wrap justify-center gap-1 md:gap-2 max-w-2xl">
         {cards.map((card: any, i: number) => {
           const isHidden = card.id === 'hidden' || (gameType === 'teen-patti' && !seeCards && player.status === 'blind');
-          const canPlay = isMyTurn && (gameType === 'call-break' || gameType === 'mendicot') && gameState?.phase !== 'BIDDING';
+          const canPlay = isMyTurn && (gameType === 'call-break' || gameType === 'mendicot') && gameState?.phase !== 'BIDDING' && gameState?.phase !== 'TRICK_COMPLETE';
           return (
             <PlayingCard
               key={card.id + i}
@@ -459,12 +728,10 @@ function MyHand({ player, gameState, gameType, isMyTurn, onTeenPattiAction, onCB
         })}
       </div>
 
-      {/* Controls */}
       {isMyTurn && (
         <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }}
           className="flex flex-wrap justify-center gap-2 mt-1">
 
-          {/* Teen Patti Controls */}
           {gameType === 'teen-patti' && player.status !== 'packed' && (
             <>
               {!isSeen && (
@@ -485,7 +752,6 @@ function MyHand({ player, gameState, gameType, isMyTurn, onTeenPattiAction, onCB
             </>
           )}
 
-          {/* Call Break Bid */}
           {gameType === 'call-break' && gameState?.phase === 'BIDDING' && (
             <div className="flex items-center gap-3 glass-panel px-5 py-3">
               <span className="text-white/70 text-sm">Your Bid:</span>
@@ -540,7 +806,6 @@ function ResultModal({ gameState, gameType, user, onNext, onLeave }: any) {
         <h2 className="font-cinzel text-2xl font-bold text-shimmer mb-2">{title}</h2>
         {subtitle && <p className="text-white/60 text-sm mb-6">{subtitle}</p>}
 
-        {/* Player scores */}
         {gameType === 'call-break' && gameState.players && (
           <div className="mb-6 space-y-2">
             {[...gameState.players].sort((a: any, b: any) => b.totalScore - a.totalScore).map((p: any, i: number) => (

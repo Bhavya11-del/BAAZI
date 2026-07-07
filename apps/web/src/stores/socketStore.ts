@@ -4,39 +4,88 @@ import { io, Socket } from 'socket.io-client';
 interface SocketStore {
   socket: Socket | null;
   connected: boolean;
-  connect: (token?: string) => void;
+  reconnectToken: string | null;
+  authToken: string | null;
+  connectError: string | null;
+  connect: (token?: string, reconnectToken?: string) => void;
   disconnect: () => void;
   emit: (event: string, data?: any) => void;
+  clearConnectError: () => void;
 }
 
 export const useSocketStore = create<SocketStore>((set, get) => ({
   socket: null,
   connected: false,
+  reconnectToken: null,
+  authToken: null,
+  connectError: null,
 
-  connect: (token?: string) => {
+  connect: (token?: string, reconnectToken?: string) => {
     const existing = get().socket;
-    if (existing?.connected) return;
-    if (existing) existing.disconnect();
+    const currentAuthToken = get().authToken;
+
+    if (!token) token = 'guest_token';
+
+    if (existing?.connected && currentAuthToken === token) return;
+
+    if (existing) {
+      existing.removeAllListeners();
+      existing.disconnect();
+    }
+
+    set({ connected: false });
 
     const socket = io('http://localhost:3001', {
-      auth: { token },
+      auth: { token, reconnectToken },
       transports: ['websocket'],
       reconnection: true,
-      reconnectionAttempts: 5,
+      reconnectionAttempts: 10,
       reconnectionDelay: 1000,
+      reconnectionDelayMax: 5000,
     });
 
-    socket.on('connect', () => set({ connected: true }));
-    socket.on('disconnect', () => set({ connected: false }));
-    set({ socket });
+    socket.on('connect', () => {
+      set({ connected: true, connectError: null, authToken: token });
+    });
+
+    socket.on('auth:success', (data: any) => {
+      if (data.reconnectToken) {
+        set({ reconnectToken: data.reconnectToken });
+        localStorage.setItem('cardkings_reconnectToken', data.reconnectToken);
+      }
+    });
+
+    socket.on('disconnect', (reason: string) => {
+      set({ connected: false });
+    });
+
+    socket.on('connect_error', (err: Error) => {
+      console.warn('Socket connect error:', err.message);
+      set({ connectError: err.message || 'Connection failed' });
+    });
+
+    (socket as any).io.on('reconnect_attempt', () => {
+      const storedToken = localStorage.getItem('cardkings_reconnectToken');
+      if (storedToken) {
+        (socket as any).io.opts.auth = { token, reconnectToken: storedToken };
+      }
+    });
+
+    set({ socket, authToken: token });
   },
 
   disconnect: () => {
-    get().socket?.disconnect();
-    set({ socket: null, connected: false });
+    const existing = get().socket;
+    if (existing) {
+      existing.removeAllListeners();
+      existing.disconnect();
+    }
+    set({ socket: null, connected: false, reconnectToken: null, authToken: null, connectError: null });
   },
 
   emit: (event, data) => {
     get().socket?.emit(event, data);
   },
+
+  clearConnectError: () => set({ connectError: null }),
 }));

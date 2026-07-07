@@ -120,7 +120,7 @@ export default function LoginPage() {
             </div>
           </div>
 
-          <button id="guest-login-btn" disabled={loading}
+          <button id="guest-login-btn" disabled={loading} onClick={handleGuest}
             className="btn-ghost w-full flex justify-center items-center gap-2">
             Continue as Guest
           </button>

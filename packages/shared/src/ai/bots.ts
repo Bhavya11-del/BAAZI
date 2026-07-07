@@ -5,7 +5,7 @@
 import { Card, Suit, RANK_ORDER, SUITS } from '../cards/deck';
 import { TeenPattiState, TeenPattiAction, evaluateHand } from '../games/teen-patti/engine';
 import { CallBreakState, TRUMP_SUIT } from '../games/call-break/engine';
-import { MendicotState } from '../games/mendicot/engine';
+import { MendicotState, getLegalMendicotCards } from '../games/mendicot/engine';
 
 export type BotDifficulty = 'easy' | 'medium' | 'hard';
 
@@ -172,51 +172,68 @@ export function getMendicotBotCard(state: MendicotState, botId: string, difficul
   const player = state.players.find(p => p.id === botId);
   if (!player || player.cards.length === 0) return null;
 
+  // Always use the engine's legal card computation so the bot never plays illegally
+  const legalCards = getLegalMendicotCards(player, state.currentTrick, state.trumpSuit);
+  if (legalCards.length === 0) return null;
+
   const leadSuit = state.currentTrick.leadSuit;
-  const suitCards = leadSuit ? player.cards.filter(c => c.suit === leadSuit) : [];
   const trump = state.trumpSuit;
-  const trumpCards = trump ? player.cards.filter(c => c.suit === trump) : [];
+  const suitCards = leadSuit ? legalCards.filter(c => c.suit === leadSuit) : [];
+  const trumpCards = trump ? legalCards.filter(c => c.suit === trump) : [];
 
   if (difficulty === 'easy') {
-    const valid = suitCards.length > 0 ? suitCards : player.cards;
-    return valid[Math.floor(Math.random() * valid.length)];
+    return legalCards[Math.floor(Math.random() * legalCards.length)];
   }
 
   if (difficulty === 'medium') {
-    if (suitCards.length > 0) {
+    // Prefer winning the trick
+    if (leadSuit && suitCards.length > 0) {
+      // Play highest card of lead suit
       return suitCards.sort((a, b) => RANK_ORDER[b.rank] - RANK_ORDER[a.rank])[0];
     }
-    if (trumpCards.length > 0) return trumpCards[0];
-    return player.cards.sort((a, b) => RANK_ORDER[a.rank] - RANK_ORDER[b.rank])[0];
+    if (trumpCards.length > 0) {
+      // Void in lead suit — choose to trump with the lowest trump
+      return trumpCards.sort((a, b) => RANK_ORDER[a.rank] - RANK_ORDER[b.rank])[0];
+    }
+    return legalCards.sort((a, b) => RANK_ORDER[b.rank] - RANK_ORDER[a.rank])[0];
   }
 
-  // Hard: prioritize winning tricks with 10s, protect own 10s
+  // Hard: strategic play
   const hasTens = player.cards.some(c => c.rank === '10');
 
-  if (suitCards.length > 0) {
+  if (leadSuit && suitCards.length > 0) {
     // If we have the 10 of lead suit and it can win, play it
     const ten = suitCards.find(c => c.rank === '10');
-    if (ten && canWinTrick(state, ten)) return ten;
-    const highCard = suitCards.sort((a, b) => RANK_ORDER[b.rank] - RANK_ORDER[a.rank])[0];
-    return highCard;
+    if (ten && canWinMendicotTrick(state, ten)) return ten;
+    // Try to win with highest card, or dump low if we can't
+    const canWin = suitCards.some(c => canWinMendicotTrick(state, c));
+    if (canWin) return suitCards.sort((a, b) => RANK_ORDER[b.rank] - RANK_ORDER[a.rank])[0];
+    return suitCards.sort((a, b) => RANK_ORDER[a.rank] - RANK_ORDER[b.rank])[0];
   }
 
-  if (trumpCards.length > 0 && hasTens) {
+  if (trumpCards.length > 0) {
+    // Void in lead suit — play lowest trump (conservative)
+    if (hasTens) return trumpCards.sort((a, b) => RANK_ORDER[a.rank] - RANK_ORDER[b.rank])[0];
     return trumpCards.sort((a, b) => RANK_ORDER[a.rank] - RANK_ORDER[b.rank])[0];
   }
 
-  return player.cards.sort((a, b) => RANK_ORDER[a.rank] - RANK_ORDER[b.rank])[0];
+  return legalCards.sort((a, b) => RANK_ORDER[a.rank] - RANK_ORDER[b.rank])[0];
 }
 
-function canWinTrick(state: MendicotState, card: Card): boolean {
+/**
+ * Check if a specific card would win the current Mendicot trick so far.
+ */
+function canWinMendicotTrick(state: MendicotState, card: Card): boolean {
   if (!state.currentTrick.cards.length) return true;
   const trump = state.trumpSuit;
   for (const entry of state.currentTrick.cards) {
     const c = entry.card;
-    const cIsTrump = trump && c.suit === trump;
-    const myIsTrump = trump && card.suit === trump;
+    const cIsTrump = trump !== null && c.suit === trump;
+    const myIsTrump = trump !== null && card.suit === trump;
     if (cIsTrump && !myIsTrump) return false;
     if (c.suit === card.suit && RANK_ORDER[c.rank] >= RANK_ORDER[card.rank]) return false;
   }
   return true;
 }
+
+
