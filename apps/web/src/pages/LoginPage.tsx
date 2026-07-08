@@ -8,12 +8,13 @@ import GoogleSignIn, { isFirebaseConfigured } from '../components/GoogleSignIn';
 
 export default function LoginPage() {
   const navigate = useNavigate();
-  const { user, login, register, loginAsGuest, loading } = useAuthStore();
+  const { user, initialized, login, register, loginAsGuest, loading } = useAuthStore();
 
-  // If already authenticated, redirect to home
+  // If already authenticated, redirect to home (only after auth init)
   useEffect(() => {
+    if (!initialized) return;
     if (user) navigate('/', { replace: true });
-  }, [user, navigate]);
+  }, [user, initialized, navigate]);
   const [mode, setMode] = useState<'login' | 'register'>('login');
   const [showPwd, setShowPwd] = useState(false);
   const [form, setForm] = useState({ email: '', name: '', password: '' });

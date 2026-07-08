@@ -29,6 +29,7 @@ interface AuthUser {
 interface AuthStore {
   user: AuthUser | null;
   loading: boolean;
+  initialized: boolean;
   login: (email: string, password: string) => Promise<void>;
   register: (email: string, name: string, password: string) => Promise<void>;
   loginAsGuest: () => Promise<void>;
@@ -41,6 +42,7 @@ interface AuthStore {
 export const useAuthStore = create<AuthStore>((set, get) => ({
   user: null,
   loading: false,
+  initialized: false,
 
   loadFromStorage: () => {
     const stored = localStorage.getItem('cardkings_user') || localStorage.getItem('cardsKingUser');
@@ -70,9 +72,12 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
           isGuest,
           token: isGuest && parsed.id ? `guest_${parsed.id}` : (parsed.token || parsed.id || 'guest_token'),
         };
-        set({ user });
+        set({ user, initialized: true });
+        return;
       } catch {}
     }
+    // Always mark as initialized — even if nothing was stored
+    set({ initialized: true });
   },
 
   login: async (email, password) => {

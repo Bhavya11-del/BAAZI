@@ -19,7 +19,7 @@ const RANK_NAMES: Record<string, string> = {
 export default function GamePage() {
   const { gameType } = useParams<{ gameType: string }>();
   const navigate = useNavigate();
-  const { user, loginAsGuest } = useAuthStore();
+  const { user, initialized, loginAsGuest } = useAuthStore();
   const { socket, connect, connected, connectError } = useSocketStore();
   const { gameState, room, roomId, setGameState, setRoom, setRoomId, addChatMessage, chatMessages, clearGame } = useGameStore();
 
@@ -55,6 +55,7 @@ export default function GamePage() {
 
   // Init
   useEffect(() => {
+    if (!initialized) return; // Wait for auth store init to finish
     if (!user) { loginAsGuest(); return; }
     if (!socket) { connect(user.token); return; }
     if (!connected) {
@@ -197,7 +198,7 @@ export default function GamePage() {
         matchmakingTimerRef.current = null;
       }
     };
-  }, [user, socket, connected, gameType, findingStatus]);
+  }, [user, initialized, socket, connected, gameType, findingStatus]);
 
   // Live turn timer countdown
   useEffect(() => {

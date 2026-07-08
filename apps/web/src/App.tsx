@@ -12,7 +12,7 @@ import AdminPage from './pages/AdminPage';
 import Navbar from './components/Navbar';
 
 function AppContent() {
-  const { user, loadFromStorage } = useAuthStore();
+  const { user, initialized, loadFromStorage } = useAuthStore();
   const { connect } = useSocketStore();
 
   useEffect(() => {
@@ -20,8 +20,9 @@ function AppContent() {
   }, []);
 
   useEffect(() => {
+    if (!initialized) return;
     if (user) connect(user.token);
-  }, [user]);
+  }, [user, initialized]);
 
   return (
     <div className="min-h-screen">
