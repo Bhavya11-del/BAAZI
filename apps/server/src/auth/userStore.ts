@@ -2,7 +2,7 @@ import { v4 as uuidv4 } from 'uuid';
 import bcrypt from 'bcryptjs';
 import { STARTING_ELO, MIN_ELO, MAX_ELO } from '../services/elo';
 import { SocialProfile } from './socialAuth';
-import { loadAllUsers, saveUser } from '../services/persistence';
+import { loadAllUsers, saveUser, loadUserById, loadUserByFirebaseUid } from '../services/persistence';
 
 export interface User {
   id: string;
@@ -27,6 +27,7 @@ export interface User {
   friends: string[];
   createdAt: string;
   isGuest: boolean;
+  firebaseUid?: string;
 }
 
 const SEED_PLAYERS = [
@@ -45,6 +46,7 @@ const SEED_PLAYERS = [
 class UserStore {
   private users: Map<string, User> = new Map();
   private emailIndex: Map<string, string> = new Map();
+  private firebaseUidIndex: Map<string, string> = new Map();
 
   constructor() {
     this.seedUsers();
@@ -78,9 +80,11 @@ class UserStore {
         friends: record.friends ?? [],
         createdAt: record.createdAt || new Date().toISOString(),
         isGuest: record.isGuest ?? false,
+        firebaseUid: record.firebaseUid || undefined,
       };
       this.users.set(id, user);
       if (user.email) this.emailIndex.set(user.email, id);
+      if (user.firebaseUid) this.firebaseUidIndex.set(user.firebaseUid, id);
     }
   }
 
@@ -171,6 +175,56 @@ class UserStore {
     return this.users.get(id);
   }
 
+  async findByIdAsync(id: string): Promise<User | undefined> {
+    const cached = this.users.get(id);
+    if (cached) return cached;
+    // Auto-load from Firestore if missing from memory
+    const record = await loadUserById(id);
+    if (record) {
+      const user: User = {
+        id,
+        email: record.email || '',
+        name: record.name || 'Player',
+        passwordHash: record.passwordHash || '',
+        avatar: record.avatar || `https://api.dicebear.com/7.x/avataaars/svg?seed=${id}`,
+        elo: record.elo ?? 800,
+        highestElo: record.highestElo ?? 800,
+        level: record.level ?? 1,
+        xp: record.xp ?? 0,
+        wins: record.wins ?? 0,
+        losses: record.losses ?? 0,
+        gamesPlayed: record.gamesPlayed ?? 0,
+        rankedWins: record.rankedWins ?? 0,
+        rankedLosses: record.rankedLosses ?? 0,
+        rankedGames: record.rankedGames ?? 0,
+        chips: record.chips ?? 500,
+        lifetimeEarned: record.lifetimeEarned ?? 0,
+        lifetimeSpent: record.lifetimeSpent ?? 0,
+        achievements: record.achievements ?? [],
+        friends: record.friends ?? [],
+        createdAt: record.createdAt || new Date().toISOString(),
+        isGuest: record.isGuest ?? false,
+        firebaseUid: record.firebaseUid || undefined,
+      };
+      this.users.set(id, user);
+      if (user.email) this.emailIndex.set(user.email, id);
+      if (user.firebaseUid) this.firebaseUidIndex.set(user.firebaseUid, id);
+      return user;
+    }
+    return undefined;
+  }
+
+  async findByFirebaseUid(firebaseUid: string): Promise<User | undefined> {
+    const cachedId = this.firebaseUidIndex.get(firebaseUid);
+    if (cachedId) return this.users.get(cachedId);
+    // Auto-load from Firestore
+    const record = await loadUserByFirebaseUid(firebaseUid);
+    if (record) {
+      return this.findByIdAsync(record.id);
+    }
+    return undefined;
+  }
+
   findByEmailOnly(email: string): User | undefined {
     const id = this.emailIndex.get(email);
     if (!id) return undefined;
@@ -179,6 +233,7 @@ class UserStore {
 
   createSocialUser(profile: SocialProfile, guestData?: any): User {
     const id = uuidv4();
+    const firebaseUid = profile.provider === 'firebase' ? profile.providerId : undefined;
     const user: User = {
       id, email: profile.email, name: profile.name, passwordHash: '',
       avatar: profile.avatar,
@@ -199,9 +254,11 @@ class UserStore {
       friends: [],
       createdAt: new Date().toISOString(),
       isGuest: false,
+      firebaseUid,
     };
     this.users.set(id, user);
     this.emailIndex.set(profile.email, id);
+    if (firebaseUid) this.firebaseUidIndex.set(firebaseUid, id);
     saveUser(id, user);
     return user;
   }
@@ -215,6 +272,14 @@ class UserStore {
     if (user) {
       const updated = { ...user, ...updates };
       this.users.set(id, updated);
+      if (user.email !== updated.email) {
+        this.emailIndex.delete(user.email);
+        if (updated.email) this.emailIndex.set(updated.email, id);
+      }
+      if (user.firebaseUid !== updated.firebaseUid) {
+        if (user.firebaseUid) this.firebaseUidIndex.delete(user.firebaseUid);
+        if (updated.firebaseUid) this.firebaseUidIndex.set(updated.firebaseUid, id);
+      }
       saveUser(id, updated);
     }
   }

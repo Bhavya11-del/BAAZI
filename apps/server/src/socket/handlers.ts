@@ -9,24 +9,80 @@ const JWT_SECRET = process.env.JWT_SECRET || 'cardkings-india-secret-2024';
 export function setupSocketHandlers(io: Server, gameManager: GameManager) {
   io.use((socket, next) => {
     const token = socket.handshake.auth.token;
+
+    console.log('[SOCKET AUTH] Incoming connection');
+
+    // ── Guest token ──────────────────────────────────────────────
     if (!token || token.startsWith('guest_') || token === 'guest_token') {
-      // Strip the 'guest_' prefix to get the raw UUID for lookup
       const rawId = token?.startsWith('guest_') ? token.slice(6) : undefined;
-      const guest = (rawId && userStore.findById(rawId)) || userStore.createGuest(rawId);
-      (socket as any).userId = guest.id;
-      (socket as any).user = guest;
-      return next();
+      console.log(`[SOCKET AUTH] Guest token — rawId: ${rawId || 'none'}`);
+
+      (async () => {
+        try {
+          if (rawId) {
+            let guest = await userStore.findByIdAsync(rawId);
+            if (guest) {
+              console.log('[SOCKET AUTH] Guest found — accepted');
+              (socket as any).userId = guest.id;
+              (socket as any).user = guest;
+              return next();
+            }
+            console.log('[SOCKET AUTH] Guest not found — creating new');
+          }
+          const guest = userStore.createGuest(rawId);
+          console.log(`[SOCKET AUTH] New guest created: ${guest.id}`);
+          (socket as any).userId = guest.id;
+          (socket as any).user = guest;
+          next();
+        } catch (err) {
+          console.log('[SOCKET AUTH] Error:', err);
+          next(new Error('Authentication error'));
+        }
+      })();
+      return;
     }
-    try {
-      const { userId } = jwt.verify(token, JWT_SECRET) as any;
-      const user = userStore.findById(userId);
-      if (!user) return next(new Error('User not found'));
-      (socket as any).userId = userId;
-      (socket as any).user = user;
-      next();
-    } catch {
-      next(new Error('Invalid token'));
-    }
+
+    // ── JWT token ─────────────────────────────────────────────────
+    (async () => {
+      try {
+        let decoded: any;
+        try {
+          decoded = jwt.verify(token, JWT_SECRET);
+          console.log(`[SOCKET AUTH] Decoded JWT — userId: ${decoded.userId}, firebaseUid: ${decoded.firebaseUid || '(none)'}`);
+        } catch (err) {
+          console.log('[SOCKET AUTH] Invalid token');
+          return next(new Error('Invalid token'));
+        }
+
+        // 1. Lookup by internal ID (with Firestore fallback)
+        let user = await userStore.findByIdAsync(decoded.userId);
+        if (user) {
+          console.log(`[SOCKET AUTH] Lookup by internal ID — found: ${user.id}`);
+          (socket as any).userId = user.id;
+          (socket as any).user = user;
+          return next();
+        }
+        console.log('[SOCKET AUTH] Lookup by internal ID — not found');
+
+        // 2. Lookup by Firebase UID
+        if (decoded.firebaseUid) {
+          user = await userStore.findByFirebaseUid(decoded.firebaseUid);
+          if (user) {
+            console.log(`[SOCKET AUTH] Lookup by Firebase UID — found: ${user.id}`);
+            (socket as any).userId = user.id;
+            (socket as any).user = user;
+            return next();
+          }
+          console.log('[SOCKET AUTH] Lookup by Firebase UID — not found');
+        }
+
+        console.log('[SOCKET AUTH] Connection rejected — Reason: User not found');
+        next(new Error('User not found'));
+      } catch (err) {
+        console.log('[SOCKET AUTH] Error:', err);
+        next(new Error('Authentication error'));
+      }
+    })();
   });
 
   io.on('connection', (socket: Socket) => {

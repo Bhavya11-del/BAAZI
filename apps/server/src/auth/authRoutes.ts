@@ -6,8 +6,10 @@ import { socialAuthManager } from './socialAuth';
 export const authRouter = Router();
 const JWT_SECRET = process.env.JWT_SECRET || 'cardkings-india-secret-2024';
 
-function signToken(userId: string) {
-  return jwt.sign({ userId }, JWT_SECRET, { expiresIn: '7d' });
+function signToken(userId: string, firebaseUid?: string) {
+  const payload: Record<string, any> = { userId };
+  if (firebaseUid) payload.firebaseUid = firebaseUid;
+  return jwt.sign(payload, JWT_SECRET, { expiresIn: '7d' });
 }
 
 authRouter.post('/social', async (req: Request, res: Response) => {
@@ -48,7 +50,8 @@ authRouter.post('/social', async (req: Request, res: Response) => {
       }
     }
 
-    const jwt = signToken(user!.id);
+    const firebaseUid = provider === 'firebase' ? profile.providerId : undefined;
+    const jwt = signToken(user!.id, firebaseUid);
     res.json({ token: jwt, user: sanitize(user!) });
   } catch (err: any) {
     const details = {
@@ -80,7 +83,7 @@ authRouter.post('/login', async (req: Request, res: Response) => {
   const { email, password } = req.body;
   const user = await userStore.findByEmail(email, password);
   if (!user) return res.status(401).json({ error: 'Invalid credentials' });
-  const token = signToken(user.id);
+  const token = signToken(user.id, user.firebaseUid);
   res.json({ token, user: sanitize(user) });
 });
 

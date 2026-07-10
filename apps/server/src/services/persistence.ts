@@ -37,6 +37,31 @@ export async function loadAllUsers(): Promise<Record<string, any>> {
   }
 }
 
+export async function loadUserById(id: string): Promise<any | null> {
+  const db = getDb();
+  if (!db) return null;
+  try {
+    const doc = await db.collection('users').doc(id).get();
+    if (!doc.exists) return null;
+    return doc.data();
+  } catch {
+    return null;
+  }
+}
+
+export async function loadUserByFirebaseUid(firebaseUid: string): Promise<any | null> {
+  const db = getDb();
+  if (!db) return null;
+  try {
+    const snap = await db.collection('users').where('firebaseUid', '==', firebaseUid).limit(1).get();
+    if (snap.empty) return null;
+    const doc = snap.docs[0];
+    return { id: doc.id, ...doc.data() };
+  } catch {
+    return null;
+  }
+}
+
 export async function saveUser(userId: string, data: any): Promise<void> {
   const db = getDb();
   if (!db) return;
