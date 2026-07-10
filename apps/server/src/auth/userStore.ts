@@ -2,6 +2,7 @@ import { v4 as uuidv4 } from 'uuid';
 import bcrypt from 'bcryptjs';
 import { STARTING_ELO, MIN_ELO, MAX_ELO } from '../services/elo';
 import { SocialProfile } from './socialAuth';
+import { loadAllUsers, saveUser } from '../services/persistence';
 
 export interface User {
   id: string;
@@ -47,6 +48,40 @@ class UserStore {
 
   constructor() {
     this.seedUsers();
+  }
+
+  async loadFromFirestore(): Promise<void> {
+    const data = await loadAllUsers();
+    if (Object.keys(data).length === 0) return;
+    // Merge Firestore data over seed data (prefer Firestore as source of truth)
+    for (const [id, record] of Object.entries(data)) {
+      const user: User = {
+        id,
+        email: record.email || '',
+        name: record.name || 'Player',
+        passwordHash: record.passwordHash || '',
+        avatar: record.avatar || `https://api.dicebear.com/7.x/avataaars/svg?seed=${id}`,
+        elo: record.elo ?? 800,
+        highestElo: record.highestElo ?? 800,
+        level: record.level ?? 1,
+        xp: record.xp ?? 0,
+        wins: record.wins ?? 0,
+        losses: record.losses ?? 0,
+        gamesPlayed: record.gamesPlayed ?? 0,
+        rankedWins: record.rankedWins ?? 0,
+        rankedLosses: record.rankedLosses ?? 0,
+        rankedGames: record.rankedGames ?? 0,
+        chips: record.chips ?? 500,
+        lifetimeEarned: record.lifetimeEarned ?? 0,
+        lifetimeSpent: record.lifetimeSpent ?? 0,
+        achievements: record.achievements ?? [],
+        friends: record.friends ?? [],
+        createdAt: record.createdAt || new Date().toISOString(),
+        isGuest: record.isGuest ?? false,
+      };
+      this.users.set(id, user);
+      if (user.email) this.emailIndex.set(user.email, id);
+    }
   }
 
   private seedUsers() {
@@ -100,6 +135,7 @@ class UserStore {
     };
     this.users.set(id, user);
     this.emailIndex.set(email, id);
+    saveUser(id, user);
     return user;
   }
 
@@ -119,6 +155,7 @@ class UserStore {
       isGuest: true,
     };
     this.users.set(id, user);
+    saveUser(id, user);
     return user;
   }
 
@@ -165,6 +202,7 @@ class UserStore {
     };
     this.users.set(id, user);
     this.emailIndex.set(profile.email, id);
+    saveUser(id, user);
     return user;
   }
 
@@ -174,13 +212,19 @@ class UserStore {
 
   updateUser(id: string, updates: Partial<User>) {
     const user = this.users.get(id);
-    if (user) this.users.set(id, { ...user, ...updates });
+    if (user) {
+      const updated = { ...user, ...updates };
+      this.users.set(id, updated);
+      saveUser(id, updated);
+    }
   }
 
   updateGuestProgress(id: string, data: Partial<User>): boolean {
     const existing = this.users.get(id);
     if (existing && existing.isGuest) {
-      this.users.set(id, { ...existing, ...data, id }); // keep original id
+      const updated = { ...existing, ...data, id }; // keep original id
+      this.users.set(id, updated);
+      saveUser(id, updated);
       return true;
     }
     if (!existing) {
@@ -208,6 +252,7 @@ class UserStore {
         createdAt: new Date().toISOString(),
       };
       this.users.set(id, guest);
+      saveUser(id, guest);
       return true;
     }
     return false;
@@ -218,7 +263,9 @@ class UserStore {
     if (!user) return;
     const newXp = user.xp + xp;
     const newLevel = Math.floor(newXp / 500) + 1;
-    this.users.set(userId, { ...user, xp: newXp, level: newLevel });
+    const updated = { ...user, xp: newXp, level: newLevel };
+    this.users.set(userId, updated);
+    saveUser(userId, updated);
   }
 }
 

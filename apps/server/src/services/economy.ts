@@ -1,10 +1,11 @@
 import { v4 as uuidv4 } from 'uuid';
 import { userStore } from '../auth/userStore';
+import { loadAllWallets, loadAllTransactions, loadAllDailyRewards, saveWallet, saveTransactions, saveDailyReward } from './persistence';
 
 export const CURRENCY_NAME = 'Royal Chips';
 export const CURRENCY_SYMBOL = '👑';
 
-export type TransactionType = 'daily_reward' | 'match_win' | 'match_loss' | 'buy_in' | 'admin_grant';
+export type TransactionType = 'daily_reward' | 'match_win' | 'match_loss' | 'buy_in' | 'match_abandoned' | 'admin_grant';
 
 export interface Transaction {
   id: string;
@@ -33,6 +34,23 @@ class EconomyService {
   private wallets = new Map<string, Wallet>();
   private transactions = new Map<string, Transaction[]>();
   private lastDailyReward = new Map<string, string>();
+
+  async loadFromFirestore(): Promise<void> {
+    const [walletData, txData, rewardData] = await Promise.all([
+      loadAllWallets(),
+      loadAllTransactions(),
+      loadAllDailyRewards(),
+    ]);
+    for (const [id, w] of Object.entries(walletData)) {
+      this.wallets.set(id, { balance: w.balance ?? 500, lifetimeEarned: w.lifetimeEarned ?? 0, lifetimeSpent: w.lifetimeSpent ?? 0 });
+    }
+    for (const [id, txs] of Object.entries(txData)) {
+      this.transactions.set(id, txs);
+    }
+    for (const [id, last] of Object.entries(rewardData)) {
+      if (last) this.lastDailyReward.set(id, last);
+    }
+  }
 
   getWallet(userId: string): Wallet {
     let wallet = this.wallets.get(userId);
@@ -66,24 +84,25 @@ class EconomyService {
     return true;
   }
 
-  rewardMatchWin(userId: string, game: string, buyIn: number, multiplier = 1): number {
+  /**
+   * Pay out prize pool winnings to a player.
+   * Pool amount was already collected via buy-ins at match start.
+   */
+  rewardPrize(userId: string, amount: number, game: string): number {
+    if (amount <= 0) return 0;
     const wallet = this.getWallet(userId);
-    const reward = Math.floor((MATCH_WIN_BASE + Math.floor(buyIn * 0.5)) * multiplier);
-    wallet.balance += reward;
-    wallet.lifetimeEarned += reward;
-    const desc = multiplier < 1 ? `Win in ${game} (bot match)` : `Win in ${game}`;
-    this.addTransaction(userId, 'match_win', reward, desc, game);
-    return reward;
+    wallet.balance += amount;
+    wallet.lifetimeEarned += amount;
+    this.addTransaction(userId, 'match_win', amount, `Prize from ${game}`, game);
+    return amount;
   }
 
-  rewardMatchLoss(userId: string, game: string, multiplier = 1): number {
-    const consolation = Math.floor(5 * multiplier);
-    const wallet = this.getWallet(userId);
-    wallet.balance += consolation;
-    wallet.lifetimeEarned += consolation;
-    const desc = multiplier < 1 ? `Played ${game} (bot match)` : `Played ${game}`;
-    this.addTransaction(userId, 'match_loss', consolation, desc, game);
-    return consolation;
+  /**
+   * No reward for abandoned matches — just record.
+   */
+  recordAbandoned(userId: string, game: string, buyIn: number): void {
+    // Buy-in is already spent (deducted at match start), no refund
+    this.addTransaction(userId, 'match_abandoned', 0, `Abandoned ${game} — buy-in ${buyIn} forfeited`, game);
   }
 
   claimDailyReward(userId: string): { reward: number; claimed: boolean; nextClaim: string } {
@@ -105,6 +124,7 @@ class EconomyService {
     const nowStr = new Date(now).toISOString();
     this.lastDailyReward.set(userId, nowStr);
     this.addTransaction(userId, 'daily_reward', DAILY_REWARD_AMOUNT, 'Daily reward', undefined);
+    saveDailyReward(userId, nowStr);
     const nextClaim = new Date(now + cooldown).toISOString();
     return { reward: DAILY_REWARD_AMOUNT, claimed: true, nextClaim };
   }
@@ -142,6 +162,9 @@ class EconomyService {
         lifetimeSpent: wallet.lifetimeSpent,
       } as any);
     }
+    // Persist to Firestore
+    saveWallet(userId, wallet);
+    saveTransactions(userId, txs);
   }
 }
 

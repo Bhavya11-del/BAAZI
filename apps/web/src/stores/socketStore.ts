@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { io, Socket } from 'socket.io-client';
 import { useAuthStore } from './authStore';
+import toast from 'react-hot-toast';
 
 interface SocketStore {
   socket: Socket | null;
@@ -8,6 +9,7 @@ interface SocketStore {
   reconnectToken: string | null;
   authToken: string | null;
   connectError: string | null;
+  heartbeatInterval: ReturnType<typeof setInterval> | null;
   connect: (token?: string, reconnectToken?: string) => void;
   disconnect: () => void;
   emit: (event: string, data?: any) => void;
@@ -20,6 +22,7 @@ export const useSocketStore = create<SocketStore>((set, get) => ({
   reconnectToken: null,
   authToken: null,
   connectError: null,
+  heartbeatInterval: null,
 
   connect: (token?: string, reconnectToken?: string) => {
     const existing = get().socket;
@@ -47,6 +50,9 @@ export const useSocketStore = create<SocketStore>((set, get) => ({
 
     socket.on('connect', () => {
       set({ connected: true, connectError: null, authToken: token });
+      // Start heartbeat to keep inactivity timer alive
+      const hb = setInterval(() => socket.emit('heartbeat'), 30000);
+      set({ heartbeatInterval: hb });
       // Sync guest progress to server after reconnection
       const authUser = useAuthStore.getState().user;
       if (authUser?.isGuest && authUser.id) {
@@ -70,6 +76,20 @@ export const useSocketStore = create<SocketStore>((set, get) => ({
           lifetimeSpent: authUser.lifetimeSpent,
           achievements: authUser.achievements,
         });
+      }
+    });
+
+    // Bot inactivity events
+    socket.on('bot:activated', (data: { userId: string }) => {
+      const authUser = useAuthStore.getState().user;
+      if (authUser?.id === data.userId) {
+        toast('You have been marked inactive. A bot is temporarily playing your turns.', { duration: 5000 });
+      }
+    });
+    socket.on('bot:deactivated', (data: { userId: string }) => {
+      const authUser = useAuthStore.getState().user;
+      if (authUser?.id === data.userId) {
+        toast.success('You are back! Control has been returned to you.', { duration: 4000 });
       }
     });
 
@@ -100,12 +120,14 @@ export const useSocketStore = create<SocketStore>((set, get) => ({
   },
 
   disconnect: () => {
+    const hb = get().heartbeatInterval;
+    if (hb) clearInterval(hb);
     const existing = get().socket;
     if (existing) {
       existing.removeAllListeners();
       existing.disconnect();
     }
-    set({ socket: null, connected: false, reconnectToken: null, authToken: null, connectError: null });
+    set({ socket: null, connected: false, reconnectToken: null, authToken: null, connectError: null, heartbeatInterval: null });
   },
 
   emit: (event, data) => {

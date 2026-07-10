@@ -10,7 +10,8 @@ import { economyRouter } from './routes/economy';
 import { setupSocketHandlers } from './socket/handlers';
 import { GameManager } from './games/GameManager';
 import { userStore } from './auth/userStore';
-import { MIN_ELO, MAX_ELO } from './services/elo';
+import { eloService, MIN_ELO, MAX_ELO } from './services/elo';
+import { economyService } from './services/economy';
 
 // safe-load .env in development; in production env vars come from the platform
 try { require('dotenv').config(); } catch { /* dotenv not available */ }
@@ -122,8 +123,20 @@ app.get('/api/leaderboard', (_req, res) => {
 const gameManager = new GameManager(io);
 setupSocketHandlers(io, gameManager);
 
-const PORT = process.env.PORT || 3001;
-httpServer.listen(PORT, () => {
-  console.log(`\n🃏 Card Kings India Server running on http://localhost:${PORT}`);
-  console.log(`📡 Socket.io ready`);
-});
+async function start() {
+  // Load persisted data from Firestore (silently degrades if unavailable)
+  await Promise.all([
+    userStore.loadFromFirestore(),
+    economyService.loadFromFirestore(),
+    eloService.loadFromFirestore(),
+  ]);
+  console.log('📦 Persistence data loaded');
+
+  const PORT = process.env.PORT || 3001;
+  httpServer.listen(PORT, () => {
+    console.log(`\n🃏 Card Kings India Server running on http://localhost:${PORT}`);
+    console.log(`📡 Socket.io ready`);
+  });
+}
+
+start();

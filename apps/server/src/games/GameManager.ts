@@ -46,6 +46,8 @@ export interface Room {
   allReady: boolean;
   buyIn: number;
   isRanked: boolean;
+  abandonedPlayers: Set<string>;
+  prizeDistributed: boolean;
 }
 
 interface ActionLogEntry {
@@ -86,15 +88,18 @@ export class GameManager {
   private gameStates = new Map<string, any>();
   private botTimers = new Map<string, NodeJS.Timeout>();
   private turnTimers = new Map<string, TurnTimer>();
-  private graceTimers = new Map<string, NodeJS.Timeout>();
   private trickAdvanceTimers = new Map<string, NodeJS.Timeout>();
   private actionLogs = new Map<string, ActionLogEntry[]>();
   private playerRooms = new Map<string, string>();
   private actionSeq = new Map<string, number>();
+  private lastActivity = new Map<string, number>();
+  private playerBotActive = new Map<string, boolean>();
+  private inactivityInterval: NodeJS.Timeout | null = null;
   private io: Server;
 
   static readonly TURN_TIMEOUT_MS = 30000;
-  static readonly DISCONNECT_GRACE_MS = 15000;
+  static readonly INACTIVITY_TIMEOUT_MS = 150000;
+  static readonly INACTIVITY_CHECK_MS = 5000;
 
   constructor(io: Server) {
     this.io = io;
@@ -107,11 +112,6 @@ export class GameManager {
     const maxP = Math.min(options.maxPlayers, this.getMaxPlayersForGame(options.game as GameType));
     const buyIn = options.buyIn ?? 0;
     const isRanked = options.isRanked ?? false;
-
-    // Deduct buy-in from host
-    if (buyIn > 0) {
-      economyService.deductBuyIn(hostId, buyIn, options.game);
-    }
 
     const room: Room = {
       id: uuidv4(),
@@ -132,6 +132,8 @@ export class GameManager {
       allReady: false,
       buyIn,
       isRanked,
+      abandonedPlayers: new Set(),
+      prizeDistributed: false,
     };
 
     // Fill remaining slots with bots
@@ -161,14 +163,9 @@ export class GameManager {
     const user = userStore.findById(userId);
     if (!user) return null;
 
-    // Check buy-in affordability
-    if (room.buyIn > 0 && (user.chips ?? 0) < room.buyIn) {
+    // Check buy-in affordability (using economy wallet)
+    if (room.buyIn > 0 && !economyService.canAfford(userId, room.buyIn)) {
       return null;
-    }
-
-    // Deduct buy-in from joining player
-    if (room.buyIn > 0) {
-      economyService.deductBuyIn(userId, room.buyIn, room.game);
     }
 
     const botIdx = room.players.findIndex(p => p.isBot);
@@ -254,7 +251,29 @@ export class GameManager {
     if (!allReady && room.players.some(p => !p.isBot)) return;
     if (room.players.filter(p => !p.isBot).length < 1) return;
 
+    // Deduct buy-in from all human players at match start
+    if (room.buyIn > 0) {
+      for (const p of room.players) {
+        if (!p.isBot && !economyService.deductBuyIn(p.id, room.buyIn, room.game)) {
+          console.error(`[GM] Player ${p.id.slice(0, 8)} cannot afford buy-in at start — aborting`);
+          io.to(roomId).emit('error', { message: 'A player cannot afford the buy-in. Aborting.' });
+          room.status = 'waiting';
+          return;
+        }
+      }
+    }
+
+    // For ranked matches, auto-select bot difficulty based on player skill
+    if (room.isRanked) {
+      const humanElos = room.players.filter(p => !p.isBot).map(p => p.elo || 800);
+      const avgElo = humanElos.length > 0 ? humanElos.reduce((a, b) => a + b, 0) / humanElos.length : 800;
+      if (avgElo < 1000) room.difficulty = 'easy';
+      else if (avgElo < 1300) room.difficulty = 'medium';
+      else room.difficulty = 'hard';
+    }
+
     room.status = 'playing';
+    room.prizeDistributed = false;
     this.clearTurnTimer(roomId);
 
     let state: any;
@@ -284,6 +303,16 @@ export class GameManager {
       }
     }
 
+    // Initialize inactivity timers for all human players
+    for (const p of room.players) {
+      if (!p.isBot) {
+        this.lastActivity.set(p.id, Date.now());
+        this.playerBotActive.set(p.id, false);
+      }
+    }
+
+    this.startInactivityChecker(io);
+
     this.gameStates.set(roomId, state);
     this.actionLogs.set(roomId, []);
     this.actionSeq.set(roomId, 0);
@@ -302,6 +331,9 @@ export class GameManager {
       console.log(`[GM] handleAction: room or state not found (roomId=${roomId})`);
       return;
     }
+
+    // Player took an action — reset inactivity timer and deactivate any bot
+    this.resetInactivityTimer(userId);
 
     console.log(`[GM] ===== handleAction ENTER =====`);
     console.log(`[GM] room.game=${room.game} userId=${userId}`);
@@ -454,7 +486,7 @@ export class GameManager {
     this.scheduleBotTurn(roomId, io);
   }
 
-  // ── Reconnection ───────────────────────────────────────────────
+    // ── Reconnection ───────────────────────────────────────────────
 
   reconnectPlayer(userId: string, roomId: string): any {
     const room = this.rooms.get(roomId);
@@ -466,6 +498,9 @@ export class GameManager {
       this.playerRooms.set(userId, roomId);
       presenceManager.setRoomId(userId, roomId);
     }
+
+    // Reset inactivity timer and deactivate any active bot for this player
+    this.resetInactivityTimer(userId);
 
     const state = this.gameStates.get(roomId);
     const lastActions = (this.actionLogs.get(roomId) || []).slice(-20);
@@ -504,8 +539,13 @@ export class GameManager {
       }
     }
 
-    // If game is active, a bot takes over
+    // If game is active, mark as abandoned and bot takes over
     if (room.status === 'playing') {
+      room.abandonedPlayers.add(userId);
+      // Record abandoned immediately
+      economyService.recordAbandoned(userId, room.game, room.buyIn);
+      eloService.recordAbandoned(userId, room.game, room.isRanked, room.buyIn, 'Player left match');
+
       const state = this.gameStates.get(roomId);
       if (state) {
         const bot = makeBotPlayer(room.difficulty, room.players.length);
@@ -531,6 +571,13 @@ export class GameManager {
   // ── Disconnect Handling ────────────────────────────────────────
 
   handleDisconnect(userId: string, io: Server) {
+    // If the player already reconnected on a different socket, ignore old disconnect
+    const presence = presenceManager.get(userId);
+    if (presence?.connected && presence.socketId) {
+      console.log(`[GM] ${presence.name} disconnected old socket — active connection exists, skipping`);
+      return;
+    }
+
     const roomId = this.playerRooms.get(userId);
     if (!roomId) return;
 
@@ -543,16 +590,9 @@ export class GameManager {
     player.connected = false;
     io.to(roomId).emit('room:playerDisconnected', { userId, name: player.name });
 
-    // If game is active, start grace timer for bot takeover
-    if (room.status === 'playing') {
-      const existing = this.graceTimers.get(userId);
-      if (existing) clearTimeout(existing);
-
-      const timer = setTimeout(() => {
-        this.replaceWithBot(roomId, userId, io);
-      }, GameManager.DISCONNECT_GRACE_MS);
-      this.graceTimers.set(userId, timer);
-    }
+    // Reset inactivity timer — the inactivity checker will handle bot takeover
+    // if the player doesn't return within INACTIVITY_TIMEOUT_MS and it's their turn
+    this.resetInactivityTimer(userId);
   }
 
   private replaceWithBot(roomId: string, userId: string, io: Server) {
@@ -603,21 +643,19 @@ export class GameManager {
     if (!currentPlayer || currentPlayer.isBot) return;
 
     const timer = setTimeout(() => {
-      // Human didn't act in time — auto-fold or play a card
+      // Human didn't act in time
       const room2 = this.rooms.get(roomId);
       if (!room2) return;
       const p = room2.players.find(p => p.id === currentPlayer.id);
-      if (!p || p.isBot || !p.connected) {
-        this.replaceWithBot(roomId, currentPlayer.id, io);
-        return;
-      }
+      if (!p || p.isBot) return;
 
+      // Auto-fold for Teen Patti (standard game mechanic — not a bot takeover)
       if (room2.game === 'teen-patti') {
         this.handleAction(roomId, currentPlayer.id, { type: 'fold', seq: (this.actionSeq.get(roomId) || 0) + 1 }, io);
         io.to(roomId).emit('game:timeout', { userId: currentPlayer.id, action: 'auto-fold' });
+        return;
       }
-      // For trick-taking games, bot will play if human doesn't
-      this.scheduleBotTurn(roomId, io);
+      // For trick-taking games: inactivity checker handles extended AFK
     }, GameManager.TURN_TIMEOUT_MS);
 
     this.turnTimers.set(roomId, {
@@ -814,84 +852,250 @@ export class GameManager {
   private handleGameEnd(roomId: string, state: any, room: Room, io: Server) {
     io.to(roomId).emit('game:roundEnd', { state });
 
+    const isFinalPhase = state.phase === 'GAME_OVER';
+    if (!isFinalPhase) return;
+
+    // Prevent duplicate distribution
+    if (room.prizeDistributed) {
+      console.log(`[GM] Prize already distributed for room ${roomId.slice(0, 8)}, skipping`);
+      return;
+    }
+    room.prizeDistributed = true;
+
     const allPlayers: any[] = state.players || [];
     const winnerId = state.winner as string | undefined;
     const humanPlayers = allPlayers.filter((p: any) => !p.isBot);
+    const activeHumans = humanPlayers.filter((p: any) => !room.abandonedPlayers.has(p.id));
+    const abandonedHumans = humanPlayers.filter((p: any) => room.abandonedPlayers.has(p.id));
     const botPlayers = allPlayers.filter((p: any) => p.isBot);
     const hasBots = botPlayers.length > 0;
 
-    // Determine bot difficulty multiplier based on room difficulty
-    const ecoMultiplier = this.getBotMultiplier(room.difficulty, hasBots);
-    const eloK = this.getBotEloK(room.difficulty, hasBots);
+    // ── Determine winner set (could be multiple in team games) ──
+    let winnerIds: string[] = [];
+    let isTeamGame = false;
 
-    for (const p of humanPlayers) {
-      const isWinner = p.id === winnerId;
+    if (room.game === 'mendicot') {
+      // Mendicot: team-based winner
+      const winningTeamId = state.roundWinner;
+      if (winningTeamId !== undefined && winningTeamId !== null) {
+        isTeamGame = true;
+        winnerIds = allPlayers
+          .filter((p: any) => p.teamId === winningTeamId && !room.abandonedPlayers.has(p.id))
+          .map((p: any) => p.id);
+      }
+    } else if (winnerId) {
+      // FFA games (teen-patti, call-break): single winner
+      winnerIds = [winnerId];
+    }
 
-      // Economy rewards
-      if (room.buyIn > 0) {
-        if (isWinner) {
-          economyService.rewardMatchWin(p.id, room.game, room.buyIn, ecoMultiplier);
+    // Filter out abandoned players from winners
+    winnerIds = winnerIds.filter(id => !room.abandonedPlayers.has(id));
+
+    const loserIds = activeHumans
+      .filter((p: any) => !winnerIds.includes(p.id))
+      .map((p: any) => p.id);
+
+    // ── Prize Pool Distribution ──
+    if (room.buyIn > 0) {
+      // Count only non-abandoned human players who paid buy-in
+      const payingPlayersCount = activeHumans.length;
+      const totalPool = room.buyIn * (payingPlayersCount + abandonedHumans.length);
+
+      if (winnerIds.length > 0 && payingPlayersCount > 0) {
+        if (isTeamGame) {
+          // Split pool equally among winning team members
+          const share = Math.floor(totalPool / winnerIds.length);
+          let remainder = totalPool - share * winnerIds.length;
+          for (const wid of winnerIds) {
+            const amount = remainder > 0 ? share + 1 : share;
+            economyService.rewardPrize(wid, amount, room.game);
+            if (remainder > 0) remainder--;
+          }
         } else {
-          economyService.rewardMatchLoss(p.id, room.game, ecoMultiplier);
+          // FFA: winner takes all
+          economyService.rewardPrize(winnerIds[0], totalPool, room.game);
         }
       }
     }
 
-    // ELO update for ranked matches
-    if (room.isRanked && winnerId && humanPlayers.length > 0) {
-      const winnerIsHuman = humanPlayers.some((p: any) => p.id === winnerId);
-      const humanLosers = humanPlayers.filter((p: any) => p.id !== winnerId);
+    // ── Record abandoned players ──
+    for (const p of abandonedHumans) {
+      economyService.recordAbandoned(p.id, room.game, room.buyIn);
+      eloService.recordAbandoned(p.id, room.game, room.isRanked, room.buyIn, 'Player left match');
+    }
 
-      if (winnerIsHuman && humanLosers.length > 0) {
-        // Human vs human — use full K (no bot multiplier)
-        for (const loser of humanLosers) {
-          eloService.applyRanked(winnerId, loser.id, room.game, 32);
+    // ── ELO update for ranked matches ──
+    if (room.isRanked && winnerIds.length > 0) {
+      const humanWinners = winnerIds.filter(w => !allPlayers.find((p: any) => p.id === w)?.isBot);
+      const humanLosers = loserIds;
+
+      if (isTeamGame) {
+        for (const wId of humanWinners) {
+          for (const lId of humanLosers) {
+            if (wId !== lId) {
+              eloService.applyRanked(wId, lId, room.game, hasBots, room.buyIn);
+            }
+          }
         }
-      } else if (winnerIsHuman && humanLosers.length === 0) {
-        // Human won against bots only
-        eloService.applyRankedVsBot(winnerId, true, room.game, room.difficulty, eloK);
-      } else if (!winnerIsHuman) {
-        // Bot won — all humans lose ELO
-        for (const p of humanPlayers) {
-          eloService.applyRankedVsBot(p.id, false, room.game, room.difficulty, eloK);
+      } else if (humanWinners.length > 0) {
+        const mainWinner = humanWinners[0];
+        if (humanLosers.length > 0) {
+          // Human vs human — some also bots present
+          for (const lId of humanLosers) {
+            eloService.applyRanked(mainWinner, lId, room.game, hasBots, room.buyIn);
+          }
+        } else {
+          // Human won against bots only
+          eloService.applyRankedVsBot(mainWinner, true, room.game, room.difficulty, room.buyIn);
         }
       }
     } else if (!room.isRanked) {
-      // Record casual matches
-      for (const p of humanPlayers) {
-        const result = p.id === winnerId ? 'win' as const : 'loss' as const;
-        eloService.recordCasual(
-          p.id,
-          winnerId || '',
-          allPlayers.find((o: any) => o.id === winnerId)?.name || 'Unknown',
-          room.game,
-          result,
-          0,
-        );
+      // Record casual match history for active players
+      for (const p of activeHumans) {
+        const result = winnerIds.includes(p.id) ? 'win' as const : 'loss' as const;
+        const opponentName = winnerIds.length > 0
+          ? allPlayers.find((o: any) => o.id === winnerIds[0])?.name || 'Unknown'
+          : 'Unknown';
+        eloService.recordCasual(p.id, winnerIds[0] || '', opponentName, room.game, result, 0, room.buyIn);
       }
     }
 
-    if (state.phase === 'GAME_OVER') {
-      room.status = 'finished';
-      io.to(roomId).emit('game:finished', { state });
+    room.status = 'finished';
+    io.to(roomId).emit('game:finished', { state });
+    this.cleanupRoom(roomId, io);
+  }
+
+  // ── Inactivity System ─────────────────────────────────────────
+
+  resetInactivityTimer(userId: string) {
+    this.lastActivity.set(userId, Date.now());
+    if (this.playerBotActive.get(userId)) {
+      this.deactivateBot(userId);
     }
   }
 
-  private getBotMultiplier(difficulty: string, hasBots: boolean): number {
-    if (!hasBots) return 1;
-    const multipliers: Record<string, number> = { easy: 0.3, medium: 0.5, hard: 0.7 };
-    return multipliers[difficulty] || 0.5;
+  private startInactivityChecker(io: Server) {
+    if (this.inactivityInterval) return;
+    console.log('[GM] Starting inactivity checker');
+    this.inactivityInterval = setInterval(() => {
+      this.checkInactivity(io);
+    }, GameManager.INACTIVITY_CHECK_MS);
   }
 
-  private getBotEloK(difficulty: string, hasBots: boolean): number {
-    if (!hasBots) return 32;
-    const kFactors: Record<string, number> = { easy: 8, medium: 16, hard: 24 };
-    return kFactors[difficulty] || 16;
+  private stopInactivityChecker() {
+    if (this.inactivityInterval) {
+      clearInterval(this.inactivityInterval);
+      this.inactivityInterval = null;
+      console.log('[GM] Stopped inactivity checker');
+    }
+  }
+
+  private checkInactivity(io: Server) {
+    for (const [roomId, room] of this.rooms) {
+      if (room.status !== 'playing') continue;
+      const state = this.gameStates.get(roomId);
+      if (!state) continue;
+
+      const currentPlayer = this.getCurrentPlayerFromState(state, room.game);
+      if (!currentPlayer || currentPlayer.isBot) continue;
+
+      // Ensure it's a human in our room
+      const player = room.players.find(p => p.id === currentPlayer.id);
+      if (!player || player.isBot) continue;
+
+      const lastActive = this.lastActivity.get(currentPlayer.id) ?? Date.now();
+      if (Date.now() - lastActive >= GameManager.INACTIVITY_TIMEOUT_MS) {
+        this.activateBotForTurn(roomId, currentPlayer.id, io);
+      }
+    }
+  }
+
+  private activateBotForTurn(roomId: string, userId: string, io: Server) {
+    const room = this.rooms.get(roomId);
+    if (!room || room.status !== 'playing') return;
+    const state = this.gameStates.get(roomId);
+    if (!state) return;
+
+    // Verify the player hasn't become active again since we checked
+    const lastActive = this.lastActivity.get(userId) ?? 0;
+    if (Date.now() - lastActive < GameManager.INACTIVITY_TIMEOUT_MS) return;
+
+    // Mark bot as active for this player
+    this.playerBotActive.set(userId, true);
+
+    io.to(roomId).emit('bot:activated', { userId });
+    console.log(`[GM] Bot activated for inactive player ${userId.slice(0, 8)} in room ${roomId.slice(0, 8)}`);
+
+    this.executeInactivityBotTurn(roomId, userId, io, room.difficulty);
+  }
+
+  private executeInactivityBotTurn(roomId: string, userId: string, io: Server, difficulty: string) {
+    const room = this.rooms.get(roomId);
+    const state = this.gameStates.get(roomId);
+    if (!room || !state) return;
+
+    let newState = state;
+    const diff = difficulty as 'easy' | 'medium' | 'hard';
+
+    try {
+      if (room.game === 'teen-patti') {
+        const action = getTeenPattiBotAction(state, userId, diff);
+        newState = applyTeenPattiAction(state, { ...action, playerId: userId });
+        if (newState.phase === 'SHOWDOWN') newState = resolveShowdown(newState);
+      } else if (room.game === 'call-break') {
+        if (state.phase === 'BIDDING') {
+          const botter = state.players?.find((p: any) => p.id === userId);
+          const bid = getCallBreakBotBid(botter?.cards || [], diff);
+          newState = placeBid(state, userId, bid);
+        } else if (state.phase === 'TRICK_PLAY') {
+          const card = getCallBreakBotCard(state, userId, diff);
+          if (card) newState = playCard(state, userId, card);
+        }
+      } else if (room.game === 'mendicot') {
+        if (state.phase === 'TRICK_PLAY') {
+          const card = getMendicotBotCard(state, userId, diff);
+          if (card) newState = playMendicotCard(state, userId, card);
+        }
+      }
+    } catch (e) {
+      console.error('[GM] Inactivity bot error:', e);
+      return;
+    }
+
+    this.gameStates.set(roomId, newState);
+    this.broadcastState(roomId, io);
+
+    if (newState.phase === 'RESULT' || newState.phase === 'GAME_OVER' || newState.phase === 'SCORING') {
+      this.handleGameEnd(roomId, newState, room, io);
+    } else if (newState.phase === 'TRICK_COMPLETE') {
+      this.scheduleTrickAdvance(roomId, io);
+    } else {
+      this.scheduleTurnTimer(roomId, io);
+      this.scheduleBotTurn(roomId, io);
+    }
+  }
+
+  private deactivateBot(userId: string) {
+    this.playerBotActive.set(userId, false);
+    const roomId = this.playerRooms.get(userId);
+    if (roomId) {
+      const io = this.io;
+      io.to(roomId).emit('bot:deactivated', { userId });
+    }
   }
 
   // ── Room Cleanup ──────────────────────────────────────────────
 
   private cleanupRoom(roomId: string, io: Server) {
+    // Clear inactivity data for players in this room
+    const room = this.rooms.get(roomId);
+    if (room) {
+      for (const p of room.players) {
+        this.lastActivity.delete(p.id);
+        this.playerBotActive.delete(p.id);
+      }
+    }
+
     this.rooms.delete(roomId);
     this.gameStates.delete(roomId);
     this.clearTurnTimer(roomId);
@@ -903,6 +1107,12 @@ export class GameManager {
     this.trickAdvanceTimers.delete(roomId);
     this.actionLogs.delete(roomId);
     this.actionSeq.delete(roomId);
+
+    // Stop inactivity checker if no more active game rooms
+    const hasActiveGames = Array.from(this.rooms.values()).some(r => r.status === 'playing');
+    if (!hasActiveGames) {
+      this.stopInactivityChecker();
+    }
   }
 
   // ── Public Getters ────────────────────────────────────────────

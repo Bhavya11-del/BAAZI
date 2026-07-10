@@ -27,6 +27,7 @@ export default function GamePage() {
   const [chatInput, setChatInput] = useState('');
   const [showEmotes, setShowEmotes] = useState(false);
   const [showResult, setShowResult] = useState(false);
+  const [showLeaveConfirm, setShowLeaveConfirm] = useState(false);
   const [bidValue, setBidValue] = useState(1);
   const [localRoomId, setLocalRoomId] = useState<string | null>(null);
   const [isSpectator, setIsSpectator] = useState(false);
@@ -240,7 +241,12 @@ export default function GamePage() {
     setShowEmotes(false);
   };
 
-  const handleLeave = () => {
+  const handleLeave = (confirmed?: boolean) => {
+    if (!confirmed && gameState && room?.status === 'playing') {
+      setShowLeaveConfirm(true);
+      return;
+    }
+    setShowLeaveConfirm(false);
     if (rid) socket?.emit('game:leave', { roomId: rid });
     clearGame();
     localStorage.removeItem('cardkings_lastRoom');
@@ -426,7 +432,7 @@ export default function GamePage() {
             <MessageSquare className="w-4 h-4" />
             {chatMessages.length > 0 && <span className="absolute -top-1 -right-1 w-2 h-2 bg-gold rounded-full" />}
           </button>
-          <button onClick={handleLeave} className="btn-danger !px-3 !py-1.5 text-sm">
+          <button onClick={() => handleLeave()} className="btn-danger !px-3 !py-1.5 text-sm">
             <LogOut className="w-4 h-4" />
           </button>
         </div>
@@ -471,7 +477,36 @@ export default function GamePage() {
       {/* Result Modal */}
       <AnimatePresence>
         {showResult && gameState && (
-          <ResultModal gameState={gameState} gameType={gameType!} user={user} onNext={handleNextRound} onLeave={handleLeave} />
+          <ResultModal gameState={gameState} gameType={gameType!} user={user} onNext={handleNextRound} onLeave={() => handleLeave(true)} />
+        )}
+      </AnimatePresence>
+
+      {/* Leave Confirmation Modal */}
+      <AnimatePresence>
+        {showLeaveConfirm && (
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+            <motion.div initial={{ scale: 0.5, y: 50 }} animate={{ scale: 1, y: 0 }}
+              transition={{ type: 'spring', stiffness: 300, damping: 20 }}
+              className="glass-panel gold-border p-8 text-center max-w-md w-full mx-4">
+              <div className="text-5xl mb-4">🚪</div>
+              <h2 className="font-cinzel text-2xl font-bold text-shimmer mb-3">Leave Match?</h2>
+              <p className="text-white/60 text-sm mb-2">
+                Leaving now will hand control of your seat to a bot.
+              </p>
+              <p className="text-red-400 text-xs mb-6">
+                You will not receive any Royal Chips or ELO rewards for this match, even if your bot later wins.
+              </p>
+              <div className="flex gap-3 justify-center">
+                <button onClick={() => setShowLeaveConfirm(false)} className="btn-gold !px-6">
+                  Stay
+                </button>
+                <button onClick={() => handleLeave(true)} className="btn-danger !px-6">
+                  Leave Match
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
         )}
       </AnimatePresence>
 

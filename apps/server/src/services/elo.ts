@@ -1,13 +1,15 @@
 import { v4 as uuidv4 } from 'uuid';
 import { userStore } from '../auth/userStore';
+import { loadAllMatchHistory, saveMatchHistory } from './persistence';
 
 // ── Constants ──────────────────────────────────────────────────
 export const MIN_ELO = 500;
 export const MAX_ELO = 2000;
 export const STARTING_ELO = 800;
 export const DEFAULT_K = 32;
+export const BOT_ELO_MULTIPLIER = 0.5;
 
-export type MatchResult = 'win' | 'loss';
+export type MatchResult = 'win' | 'loss' | 'abandoned';
 
 export interface MatchRecord {
   id: string;
@@ -21,11 +23,43 @@ export interface MatchRecord {
   eloAfter: number;
   isRanked: boolean;
   chipsChange: number;
+  buyIn: number;
+  reason?: string;
   createdAt: string;
 }
 
 class ELO {
   private matchHistory = new Map<string, MatchRecord[]>();
+
+  async loadFromFirestore(): Promise<void> {
+    const data = await loadAllMatchHistory();
+    for (const [id, records] of Object.entries(data)) {
+      this.matchHistory.set(id, records);
+    }
+  }
+
+  /**
+   * Dynamic K-factor based on player's current ELO and role (winner/loser).
+   * Below 1000: winners climb faster, losers lose less.
+   * Above 1000: progression flattens, competition tightens.
+   */
+  getDynamicKFactor(elo: number, isWinner: boolean): number {
+    if (elo < 800) return isWinner ? 52 : 18;
+    if (elo < 1000) return isWinner ? 44 : 22;
+    if (elo < 1300) return isWinner ? 32 : 28;
+    if (elo < 1600) return isWinner ? 26 : 30;
+    return isWinner ? 22 : 32;
+  }
+
+  /**
+   * Get the effective K-factor for a match.
+   * - Human vs Human: uses player's ELO-based dynamic K
+   * - Human vs Bot: reduces K by BOT_ELO_MULTIPLIER
+   */
+  getEffectiveK(elo: number, isWinner: boolean, isBotMatch: boolean): number {
+    const k = this.getDynamicKFactor(elo, isWinner);
+    return isBotMatch ? Math.round(k * BOT_ELO_MULTIPLIER) : k;
+  }
 
   /**
    * Calculate expected score for player A against player B.
@@ -35,14 +69,15 @@ class ELO {
   }
 
   /**
-   * Calculate new ELO after a match. Returns the adjusted ELO clamped to [MIN, MAX].
+   * Calculate new ELO after a match with individual K-factors per player.
+   * Returns the adjusted ELO clamped to [MIN, MAX].
    */
-  calculate(winnerElo: number, loserElo: number, k = DEFAULT_K): { winnerNew: number; loserNew: number } {
+  calculate(winnerElo: number, loserElo: number, kWinner = DEFAULT_K, kLoser = DEFAULT_K): { winnerNew: number; loserNew: number } {
     const expectedWinner = this.expectedScore(winnerElo, loserElo);
     const expectedLoser = 1 - expectedWinner;
 
-    let winnerNew = Math.round(winnerElo + k * (1 - expectedWinner));
-    let loserNew = Math.round(loserElo + k * (0 - expectedLoser));
+    let winnerNew = Math.round(winnerElo + kWinner * (1 - expectedWinner));
+    let loserNew = Math.round(loserElo + kLoser * (0 - expectedLoser));
 
     // Clamp
     winnerNew = Math.min(MAX_ELO, Math.max(MIN_ELO, winnerNew));
@@ -52,16 +87,19 @@ class ELO {
   }
 
   /**
-   * Apply ELO changes after a ranked match and store record.
+   * Apply ELO changes after a ranked human vs human match.
+   * Uses dynamic K-factors based on each player's current ELO.
    */
   applyRanked(
-    winnerId: string, loserId: string, game: string, k = DEFAULT_K,
+    winnerId: string, loserId: string, game: string, isBotMatch: boolean = false, buyIn: number = 0,
   ): { winnerChange: number; loserChange: number } {
     const winner = userStore.findById(winnerId);
     const loser = userStore.findById(loserId);
     if (!winner || !loser) return { winnerChange: 0, loserChange: 0 };
 
-    const { winnerNew, loserNew } = this.calculate(winner.elo, loser.elo, k);
+    const kWinner = this.getEffectiveK(winner.elo, true, isBotMatch);
+    const kLoser = this.getEffectiveK(loser.elo, false, isBotMatch);
+    const { winnerNew, loserNew } = this.calculate(winner.elo, loser.elo, kWinner, kLoser);
     const winnerChange = winnerNew - winner.elo;
     const loserChange = loserNew - loser.elo;
 
@@ -81,18 +119,18 @@ class ELO {
 
     const timestamp = new Date().toISOString();
 
-    this.recordMatch(winnerId, loserId, game, 'win', winnerChange, winner.elo, winnerNew, true, timestamp);
-    this.recordMatch(loserId, winnerId, game, 'loss', loserChange, loser.elo, loserNew, true, timestamp);
+    this.recordMatch(winnerId, loserId, game, 'win', winnerChange, winner.elo, winnerNew, true, timestamp, buyIn);
+    this.recordMatch(loserId, winnerId, game, 'loss', loserChange, loser.elo, loserNew, true, timestamp, buyIn);
 
     return { winnerChange, loserChange };
   }
 
   /**
    * Apply ELO change for a human playing against bots.
-   * Uses a scaled K-factor based on bot difficulty.
+   * Uses dynamic K-factors (reduced by BOT_ELO_MULTIPLIER) based on human ELO.
    */
   applyRankedVsBot(
-    humanId: string, isWinner: boolean, game: string, botDifficulty: string, k: number,
+    humanId: string, isWinner: boolean, game: string, botDifficulty: string, buyIn: number = 0,
   ): number {
     const human = userStore.findById(humanId);
     if (!human) return 0;
@@ -100,12 +138,13 @@ class ELO {
     const botBaseElo: Record<string, number> = { easy: 700, medium: 1000, hard: 1400 };
     const botElo = botBaseElo[botDifficulty] || 1000;
 
+    const k = this.getEffectiveK(human.elo, isWinner, true);
     let change: number;
     if (isWinner) {
-      const { winnerNew } = this.calculate(human.elo, botElo, k);
+      const { winnerNew } = this.calculate(human.elo, botElo, k, DEFAULT_K);
       change = winnerNew - human.elo;
     } else {
-      const { loserNew } = this.calculate(botElo, human.elo, k);
+      const { loserNew } = this.calculate(botElo, human.elo, DEFAULT_K, k);
       change = loserNew - human.elo;
     }
 
@@ -120,15 +159,37 @@ class ELO {
     } as any);
 
     const timestamp = new Date().toISOString();
-    this.recordMatch(humanId, `bot_${botDifficulty}`, game, isWinner ? 'win' : 'loss', actualChange, human.elo, newElo, true, timestamp);
+    this.recordMatch(humanId, `bot_${botDifficulty}`, game, isWinner ? 'win' : 'loss', actualChange, human.elo, newElo, true, timestamp, buyIn);
     return actualChange;
+  }
+
+  /**
+   * Record an abandoned match — no ELO change, no chips change, just history.
+   */
+  recordAbandoned(userId: string, game: string, isRanked: boolean, buyIn: number, reason: string = 'Player left match') {
+    const user = userStore.findById(userId);
+    if (!user) return;
+
+    const record: MatchRecord = {
+      id: uuidv4(), userId, game,
+      opponentId: '', opponentName: '',
+      result: 'abandoned',
+      eloChange: 0, eloBefore: user.elo, eloAfter: user.elo,
+      isRanked, chipsChange: 0, buyIn,
+      reason,
+      createdAt: new Date().toISOString(),
+    };
+    const history = this.matchHistory.get(userId) || [];
+    history.push(record);
+    this.matchHistory.set(userId, history);
+    saveMatchHistory(userId, history);
   }
 
   /**
    * Record a casual match (no ELO change, but history is stored).
    */
   recordCasual(
-    userId: string, opponentId: string, opponentName: string, game: string, result: MatchResult, chipsChange: number,
+    userId: string, opponentId: string, opponentName: string, game: string, result: MatchResult, chipsChange: number, buyIn: number = 0,
   ) {
     const user = userStore.findById(userId);
     if (!user) return;
@@ -136,11 +197,12 @@ class ELO {
     const record: MatchRecord = {
       id: uuidv4(), userId, game, opponentId, opponentName, result,
       eloChange: 0, eloBefore: user.elo, eloAfter: user.elo,
-      isRanked: false, chipsChange, createdAt: new Date().toISOString(),
+      isRanked: false, chipsChange, buyIn, createdAt: new Date().toISOString(),
     };
     const history = this.matchHistory.get(userId) || [];
     history.push(record);
     this.matchHistory.set(userId, history);
+    saveMatchHistory(userId, history);
   }
 
   /**
@@ -152,16 +214,17 @@ class ELO {
 
   private recordMatch(
     userId: string, opponentId: string, game: string, result: MatchResult,
-    eloChange: number, eloBefore: number, eloAfter: number, isRanked: boolean, timestamp: string,
+    eloChange: number, eloBefore: number, eloAfter: number, isRanked: boolean, timestamp: string, buyIn: number = 0,
   ) {
     const opponent = userStore.findById(opponentId);
     const record: MatchRecord = {
       id: uuidv4(), userId, game, opponentId, opponentName: opponent?.name || 'Unknown',
-      result, eloChange, eloBefore, eloAfter, isRanked, chipsChange: 0, createdAt: timestamp,
+      result, eloChange, eloBefore, eloAfter, isRanked, chipsChange: 0, buyIn, createdAt: timestamp,
     };
     const history = this.matchHistory.get(userId) || [];
     history.push(record);
     this.matchHistory.set(userId, history);
+    saveMatchHistory(userId, history);
   }
 }
 

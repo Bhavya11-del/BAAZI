@@ -43,7 +43,6 @@ export function setupSocketHandlers(io: Server, gameManager: GameManager) {
         socket.join(existingRoomId);
         socket.emit('room:reconnected', recovery);
         socket.to(existingRoomId).emit('room:playerReconnected', { userId: user.id, name: user.name });
-        // Cancel any grace timer for bot takeover
       }
     }
 
@@ -152,6 +151,7 @@ export function setupSocketHandlers(io: Server, gameManager: GameManager) {
 
     // ── CHAT ───────────────────────────────────────────────────
     socket.on('chat:message', (data: { roomId: string; message: string }) => {
+      gameManager.resetInactivityTimer(user.id);
       const msg = {
         id: Date.now().toString(),
         userId: user.id,
@@ -164,11 +164,17 @@ export function setupSocketHandlers(io: Server, gameManager: GameManager) {
     });
 
     socket.on('chat:emote', (data: { roomId: string; emote: string }) => {
+      gameManager.resetInactivityTimer(user.id);
       const VALID_EMOTES = ['👍', '😄', '🎉', '😮', '👏', '🤔', '😎', '🃏'];
       if (!VALID_EMOTES.includes(data.emote)) return;
       io.to(data.roomId).emit('chat:emote', {
         userId: user.id, name: user.name, emote: data.emote,
       });
+    });
+
+    // ── HEARTBEAT ──────────────────────────────────────────────
+    socket.on('heartbeat', () => {
+      gameManager.resetInactivityTimer(user.id);
     });
 
     // ── DISCONNECT ─────────────────────────────────────────────
