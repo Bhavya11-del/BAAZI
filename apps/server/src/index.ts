@@ -1,4 +1,3 @@
-import 'dotenv/config';
 import express from 'express';
 import { createServer } from 'http';
 import { Server } from 'socket.io';
@@ -13,33 +12,38 @@ import { GameManager } from './games/GameManager';
 import { userStore } from './auth/userStore';
 import { MIN_ELO, MAX_ELO } from './services/elo';
 
+// safe-load .env in development; in production env vars come from the platform
+try { require('dotenv').config(); } catch { /* dotenv not available */ }
+
 const firebaseProjectId = process.env.FIREBASE_PROJECT_ID || process.env.VITE_FIREBASE_PROJECT_ID;
 if (firebaseProjectId) {
   try {
-    const base64Key = process.env.FIREBASE_SERVICE_ACCOUNT_KEY;
-    const filePath = process.env.FIREBASE_SERVICE_ACCOUNT_PATH;
+    const saKey = process.env.FIREBASE_SERVICE_ACCOUNT_KEY;
+    const saPath = process.env.FIREBASE_SERVICE_ACCOUNT_PATH;
 
-    if (base64Key) {
-      const serviceAccount = JSON.parse(
-        Buffer.from(base64Key, 'base64').toString('utf-8')
-      );
+    if (saKey) {
+      let serviceAccount: Record<string, unknown>;
+      try {
+        serviceAccount = JSON.parse(saKey);
+      } catch {
+        serviceAccount = JSON.parse(Buffer.from(saKey, 'base64').toString('utf-8'));
+      }
       initializeApp({ credential: cert(serviceAccount) });
-      console.log('Firebase Admin initialized from FIREBASE_SERVICE_ACCOUNT_KEY');
-    } else if (filePath) {
-      const resolvedPath = path.resolve(filePath);
+      console.log('Firebase Admin initialized');
+    } else if (saPath) {
+      const resolvedPath = path.resolve(saPath);
       const raw = fs.readFileSync(resolvedPath, 'utf-8');
-      const serviceAccount = JSON.parse(raw);
-      initializeApp({ credential: cert(serviceAccount) });
-      console.log('Firebase Admin initialized from', resolvedPath);
+      initializeApp({ credential: cert(JSON.parse(raw)) });
+      console.log('Firebase Admin initialized');
     } else {
       initializeApp({ projectId: firebaseProjectId });
-      console.log('Firebase Admin initialized with project ID. For local dev, set GOOGLE_APPLICATION_CREDENTIALS or FIREBASE_SERVICE_ACCOUNT_PATH in .env');
+      console.log('Firebase Admin initialized');
     }
   } catch (err) {
     console.error('Firebase Admin initialization FAILED:', err);
   }
 } else {
-  console.warn('Firebase Admin not configured — social auth (Google sign-in) will return 401. Set FIREBASE_PROJECT_ID in apps/server/.env');
+  console.warn('Firebase Admin not configured — social auth (Google sign-in) will return 401');
 }
 
 const app = express();
