@@ -49,19 +49,26 @@ if (firebaseProjectId) {
 const app = express();
 const httpServer = createServer(app);
 
+const ALLOWED_ORIGINS = [
+  'https://baazi-black.vercel.app',
+  'http://localhost:5173',
+];
+
 const corsOrigin = process.env.CORS_ORIGIN
   ? process.env.CORS_ORIGIN.split(',').map(s => s.trim())
-  : ['http://localhost:5173', 'http://localhost:3000'];
+  : ALLOWED_ORIGINS;
 
-const io = new Server(httpServer, {
-  cors: {
-    origin: corsOrigin,
-    methods: ['GET', 'POST'],
-    credentials: true,
-  },
-});
+const corsOptions = {
+  origin: corsOrigin,
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Authorization', 'Content-Type'],
+  credentials: true,
+};
 
-app.use(cors({ origin: corsOrigin, credentials: true }));
+const io = new Server(httpServer, { cors: corsOptions });
+
+app.use(cors(corsOptions));
+app.options('*', cors(corsOptions));
 app.use(express.json());
 
 app.use('/api/auth', authRouter);
