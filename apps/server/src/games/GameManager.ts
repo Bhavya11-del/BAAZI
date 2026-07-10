@@ -9,7 +9,7 @@ import {
   initTeenPattiGame, dealCards as dealTeenPatti, applyAction as applyTeenPattiAction, resolveShowdown,
   initCallBreak, dealCallBreak, placeBid, playCard, advanceCallBreakTrick,
   initMendicot, dealMendicot, playMendicotCard, advanceMendicotTrick,
-  getTeenPattiBotAction, getCallBreakBotBid, getCallBreakBotCard, getMendicotBotCard,
+  getTeenPattiBotAction, getCallBreakBotBid, getCallBreakBotCard, getCallBreakWinner, getMendicotBotCard,
 } from '@card-kings/shared';
 
 export type GameType = 'teen-patti' | 'call-break' | 'mendicot';
@@ -206,7 +206,7 @@ export class GameManager {
     }
     return this.createRoom(userId, {
       game, maxPlayers: this.getMaxPlayersForGame(game as GameType), isPrivate: false, difficulty: 'medium',
-      buyIn: 0, isRanked: false,
+      buyIn: 0, isRanked: true,
     });
   }
 
@@ -539,12 +539,10 @@ export class GameManager {
       }
     }
 
-    // If game is active, mark as abandoned and bot takes over
+    // If game is active, mark as abandoned and bot takes over.
+    // Economy & ELO recording happens once in handleGameEnd to avoid duplicates.
     if (room.status === 'playing') {
       room.abandonedPlayers.add(userId);
-      // Record abandoned immediately
-      economyService.recordAbandoned(userId, room.game, room.buyIn);
-      eloService.recordAbandoned(userId, room.game, room.isRanked, room.buyIn, 'Player left match');
 
       const state = this.gameStates.get(roomId);
       if (state) {
@@ -852,7 +850,11 @@ export class GameManager {
   private handleGameEnd(roomId: string, state: any, room: Room, io: Server) {
     io.to(roomId).emit('game:roundEnd', { state });
 
-    const isFinalPhase = state.phase === 'GAME_OVER';
+    console.log(`[ELO] Match complete: room=${roomId.slice(0,8)} game=${room.game} phase=${state.phase} isRanked=${room.isRanked} buyIn=${room.buyIn}`);
+
+    const isFinalPhase = state.phase === 'GAME_OVER'
+      || (room.game === 'teen-patti' && state.phase === 'RESULT')
+      || (room.game === 'mendicot' && state.phase === 'SCORING');
     if (!isFinalPhase) return;
 
     // Prevent duplicate distribution
@@ -883,8 +885,13 @@ export class GameManager {
           .filter((p: any) => p.teamId === winningTeamId && !room.abandonedPlayers.has(p.id))
           .map((p: any) => p.id);
       }
+    } else if (room.game === 'call-break' && state.phase === 'GAME_OVER') {
+      const cbWinner = getCallBreakWinner(state);
+      if (cbWinner) {
+        winnerIds = [cbWinner.id];
+      }
     } else if (winnerId) {
-      // FFA games (teen-patti, call-break): single winner
+      // FFA games (teen-patti): single winner
       winnerIds = [winnerId];
     }
 
@@ -901,6 +908,8 @@ export class GameManager {
       const payingPlayersCount = activeHumans.length;
       const totalPool = room.buyIn * (payingPlayersCount + abandonedHumans.length);
 
+      console.log(`[ECONOMY] Prize pool: totalPool=${totalPool} buyIn=${room.buyIn} paying=${payingPlayersCount} abandoned=${abandonedHumans.length} winners=${JSON.stringify(winnerIds)}`);
+
       if (winnerIds.length > 0 && payingPlayersCount > 0) {
         if (isTeamGame) {
           // Split pool equally among winning team members
@@ -915,6 +924,8 @@ export class GameManager {
           // FFA: winner takes all
           economyService.rewardPrize(winnerIds[0], totalPool, room.game);
         }
+      } else {
+        console.log(`[ECONOMY] SKIP payout: winnerIds.length=${winnerIds.length} payingPlayersCount=${payingPlayersCount}`);
       }
     }
 
@@ -926,15 +937,23 @@ export class GameManager {
 
     // ── ELO update for ranked matches ──
     if (room.isRanked && winnerIds.length > 0) {
+      console.log(`[ELO] Ranked match: humanWinners=${winnerIds.filter(w => !allPlayers.find((p: any) => p.id === w)?.isBot).length} humanLosers=${loserIds.length} isTeamGame=${isTeamGame}`);
       const humanWinners = winnerIds.filter(w => !allPlayers.find((p: any) => p.id === w)?.isBot);
       const humanLosers = loserIds;
 
       if (isTeamGame) {
-        for (const wId of humanWinners) {
-          for (const lId of humanLosers) {
-            if (wId !== lId) {
-              eloService.applyRanked(wId, lId, room.game, hasBots, room.buyIn);
+        if (humanWinners.length > 0) {
+          for (const wId of humanWinners) {
+            for (const lId of humanLosers) {
+              if (wId !== lId) {
+                eloService.applyRanked(wId, lId, room.game, hasBots, room.buyIn);
+              }
             }
+          }
+        } else if (humanLosers.length > 0) {
+          // All winners were bots — humans lost to bots in team game
+          for (const lId of humanLosers) {
+            eloService.applyRankedVsBot(lId, false, room.game, room.difficulty, room.buyIn);
           }
         }
       } else if (humanWinners.length > 0) {
@@ -948,8 +967,16 @@ export class GameManager {
           // Human won against bots only
           eloService.applyRankedVsBot(mainWinner, true, room.game, room.difficulty, room.buyIn);
         }
+      } else if (humanLosers.length > 0) {
+        // No human winner — human(s) lost to bots
+        for (const lId of humanLosers) {
+          eloService.applyRankedVsBot(lId, false, room.game, room.difficulty, room.buyIn);
+        }
       }
+    } else if (room.isRanked) {
+      console.log(`[ELO] SKIP ranked ELO: winnerIds.length=0 — no winner identified`);
     } else if (!room.isRanked) {
+      console.log(`[ELO] Casual match: activeHumans=${activeHumans.length} winnerIds=${JSON.stringify(winnerIds)}`);
       // Record casual match history for active players
       for (const p of activeHumans) {
         const result = winnerIds.includes(p.id) ? 'win' as const : 'loss' as const;

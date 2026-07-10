@@ -332,6 +332,17 @@ class UserStore {
     this.users.set(userId, updated);
     saveUser(userId, updated);
   }
+
+  /**
+   * Place a user directly into the in-memory cache (used by socket auth
+   * when a direct Firestore read succeeds after all other lookups fail).
+   */
+  getOrSetFromFirestore(id: string, user: User): User {
+    this.users.set(id, user);
+    if (user.email) this.emailIndex.set(user.email, id);
+    if (user.firebaseUid) this.firebaseUidIndex.set(user.firebaseUid, id);
+    return user;
+  }
 }
 
 export const userStore = new UserStore();

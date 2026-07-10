@@ -95,7 +95,10 @@ class ELO {
   ): { winnerChange: number; loserChange: number } {
     const winner = userStore.findById(winnerId);
     const loser = userStore.findById(loserId);
-    if (!winner || !loser) return { winnerChange: 0, loserChange: 0 };
+    if (!winner || !loser) {
+      console.log(`[ELO] SKIP applyRanked: winner=${winnerId.slice(0,8)} found=${!!winner} loser=${loserId.slice(0,8)} found=${!!loser}`);
+      return { winnerChange: 0, loserChange: 0 };
+    }
 
     const kWinner = this.getEffectiveK(winner.elo, true, isBotMatch);
     const kLoser = this.getEffectiveK(loser.elo, false, isBotMatch);
@@ -103,9 +106,15 @@ class ELO {
     const winnerChange = winnerNew - winner.elo;
     const loserChange = loserNew - loser.elo;
 
+    console.log(`[ELO] Match complete: game=${game} isBotMatch=${isBotMatch}`);
+    console.log(`[ELO] Ranked: winner=${winner.name} old=${winner.elo} delta=+${winnerChange} new=${winnerNew}`);
+    console.log(`[ELO] Ranked: loser=${loser.name} old=${loser.elo} delta=${loserChange} new=${loserNew}`);
+
     userStore.updateUser(winnerId, {
       elo: winnerNew,
       highestElo: Math.max(winner.highestElo || winner.elo, winnerNew),
+      wins: (winner.wins || 0) + 1,
+      gamesPlayed: (winner.gamesPlayed || 0) + 1,
       rankedWins: (winner.rankedWins || 0) + 1,
       rankedGames: (winner.rankedGames || 0) + 1,
     } as any);
@@ -113,9 +122,13 @@ class ELO {
     userStore.updateUser(loserId, {
       elo: loserNew,
       highestElo: Math.max(loser.highestElo || loser.elo, loserNew),
+      losses: (loser.losses || 0) + 1,
+      gamesPlayed: (loser.gamesPlayed || 0) + 1,
       rankedLosses: (loser.rankedLosses || 0) + 1,
       rankedGames: (loser.rankedGames || 0) + 1,
     } as any);
+
+    console.log(`[ELO] Firestore saved: winner=${winnerId.slice(0,8)} loser=${loserId.slice(0,8)}`);
 
     const timestamp = new Date().toISOString();
 
@@ -133,7 +146,10 @@ class ELO {
     humanId: string, isWinner: boolean, game: string, botDifficulty: string, buyIn: number = 0,
   ): number {
     const human = userStore.findById(humanId);
-    if (!human) return 0;
+    if (!human) {
+      console.log(`[ELO] SKIP applyRankedVsBot: human not found id=${humanId.slice(0,8)}`);
+      return 0;
+    }
 
     const botBaseElo: Record<string, number> = { easy: 700, medium: 1000, hard: 1400 };
     const botElo = botBaseElo[botDifficulty] || 1000;
@@ -151,12 +167,19 @@ class ELO {
     const newElo = Math.min(MAX_ELO, Math.max(MIN_ELO, human.elo + change));
     const actualChange = newElo - human.elo;
 
+    console.log(`[ELO] Bot match: game=${game} difficulty=${botDifficulty}`);
+    console.log(`[ELO] ${isWinner ? 'Winner' : 'Loser'}: human=${human.name} old=${human.elo} delta=${actualChange} new=${newElo}`);
+
     userStore.updateUser(humanId, {
       elo: newElo,
       highestElo: Math.max(human.highestElo || human.elo, newElo),
+      [isWinner ? 'wins' : 'losses']: (human[isWinner ? 'wins' : 'losses'] || 0) + 1,
+      gamesPlayed: (human.gamesPlayed || 0) + 1,
       [isWinner ? 'rankedWins' : 'rankedLosses']: (human[isWinner ? 'rankedWins' : 'rankedLosses'] || 0) + 1,
       rankedGames: (human.rankedGames || 0) + 1,
     } as any);
+
+    console.log(`[ELO] Firestore saved: ${humanId.slice(0,8)}`);
 
     const timestamp = new Date().toISOString();
     this.recordMatch(humanId, `bot_${botDifficulty}`, game, isWinner ? 'win' : 'loss', actualChange, human.elo, newElo, true, timestamp, buyIn);
@@ -168,7 +191,12 @@ class ELO {
    */
   recordAbandoned(userId: string, game: string, isRanked: boolean, buyIn: number, reason: string = 'Player left match') {
     const user = userStore.findById(userId);
-    if (!user) return;
+    if (!user) {
+      console.log(`[ELO] SKIP recordAbandoned: user not found id=${userId.slice(0,8)}`);
+      return;
+    }
+
+    console.log(`[ELO] Abandoned: user=${user.name} game=${game} reason=${reason}`);
 
     const record: MatchRecord = {
       id: uuidv4(), userId, game,
@@ -192,7 +220,18 @@ class ELO {
     userId: string, opponentId: string, opponentName: string, game: string, result: MatchResult, chipsChange: number, buyIn: number = 0,
   ) {
     const user = userStore.findById(userId);
-    if (!user) return;
+    if (!user) {
+      console.log(`[ELO] SKIP recordCasual: user not found id=${userId.slice(0,8)}`);
+      return;
+    }
+
+    console.log(`[ELO] Casual: user=${user.name} game=${game} result=${result}`);
+
+    // Update base stats (no ELO change in casual)
+    userStore.updateUser(userId, {
+      [result === 'win' ? 'wins' : 'losses']: (user[result === 'win' ? 'wins' : 'losses'] || 0) + 1,
+      gamesPlayed: (user.gamesPlayed || 0) + 1,
+    } as any);
 
     const record: MatchRecord = {
       id: uuidv4(), userId, game, opponentId, opponentName, result,

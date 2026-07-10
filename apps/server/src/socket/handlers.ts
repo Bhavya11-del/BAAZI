@@ -2,6 +2,7 @@ import { Server, Socket } from 'socket.io';
 import { GameManager } from '../games/GameManager';
 import { userStore } from '../auth/userStore';
 import { presenceManager } from '../presence';
+import { loadUserById } from '../services/persistence';
 import jwt from 'jsonwebtoken';
 
 const JWT_SECRET = process.env.JWT_SECRET || 'cardkings-india-secret-2024';
@@ -54,29 +55,72 @@ export function setupSocketHandlers(io: Server, gameManager: GameManager) {
           return next(new Error('Invalid token'));
         }
 
-        // 1. Lookup by internal ID (with Firestore fallback)
+        // ── 1. Lookup by internal ID (cache first, then Firestore) ──
         let user = await userStore.findByIdAsync(decoded.userId);
         if (user) {
           console.log(`[SOCKET AUTH] Lookup by internal ID — found: ${user.id}`);
           (socket as any).userId = user.id;
           (socket as any).user = user;
+          console.log('[SOCKET AUTH] Accepted');
           return next();
         }
         console.log('[SOCKET AUTH] Lookup by internal ID — not found');
 
-        // 2. Lookup by Firebase UID
+        // ── 2. Lookup by Firebase UID (if present in JWT) ──────────
         if (decoded.firebaseUid) {
           user = await userStore.findByFirebaseUid(decoded.firebaseUid);
           if (user) {
             console.log(`[SOCKET AUTH] Lookup by Firebase UID — found: ${user.id}`);
             (socket as any).userId = user.id;
             (socket as any).user = user;
+            console.log('[SOCKET AUTH] Accepted');
             return next();
           }
           console.log('[SOCKET AUTH] Lookup by Firebase UID — not found');
+        } else {
+          console.log('[SOCKET AUTH] Lookup by Firebase UID — skipped (no firebaseUid in JWT)');
         }
 
-        console.log('[SOCKET AUTH] Connection rejected — Reason: User not found');
+        // ── 3. Direct Firestore query by document ID (final fallback) ──
+        console.log('[SOCKET AUTH] Lookup in Firestore');
+        const record = await loadUserById(decoded.userId);
+        if (record) {
+          // Hydrate user into the in-memory cache so subsequent lookups succeed
+          const hydrated = {
+            id: decoded.userId,
+            email: record.email || '',
+            name: record.name || 'Player',
+            passwordHash: record.passwordHash || '',
+            avatar: record.avatar || `https://api.dicebear.com/7.x/avataaars/svg?seed=${decoded.userId}`,
+            elo: record.elo ?? 800,
+            highestElo: record.highestElo ?? 800,
+            level: record.level ?? 1,
+            xp: record.xp ?? 0,
+            wins: record.wins ?? 0,
+            losses: record.losses ?? 0,
+            gamesPlayed: record.gamesPlayed ?? 0,
+            rankedWins: record.rankedWins ?? 0,
+            rankedLosses: record.rankedLosses ?? 0,
+            rankedGames: record.rankedGames ?? 0,
+            chips: record.chips ?? 500,
+            lifetimeEarned: record.lifetimeEarned ?? 0,
+            lifetimeSpent: record.lifetimeSpent ?? 0,
+            achievements: record.achievements ?? [],
+            friends: record.friends ?? [],
+            createdAt: record.createdAt || new Date().toISOString(),
+            isGuest: record.isGuest ?? false,
+            firebaseUid: record.firebaseUid || undefined,
+          } as any;
+          userStore.getOrSetFromFirestore(decoded.userId, hydrated);
+          (socket as any).userId = hydrated.id;
+          (socket as any).user = hydrated;
+          console.log('[SOCKET AUTH] Hydrated user into cache');
+          console.log('[SOCKET AUTH] Accepted');
+          return next();
+        }
+
+        console.log('[SOCKET AUTH] Lookup in Firestore — not found');
+        console.log('[SOCKET AUTH] Rejected');
         next(new Error('User not found'));
       } catch (err) {
         console.log('[SOCKET AUTH] Error:', err);

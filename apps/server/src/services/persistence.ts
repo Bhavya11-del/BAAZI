@@ -1,22 +1,31 @@
 import { v4 as uuidv4 } from 'uuid';
 
-let firestore: any = null;
-let initialized = false;
+let firestoreModule: any = null;
+let firestoreResolved = false;
 
-try {
-  const admin = require('firebase-admin');
-  if (admin.apps?.length) {
-    firestore = require('firebase-admin/firestore');
-    initialized = true;
+/**
+ * Lazily initialise the Firestore reference on first call so that
+ * firebase-admin has been given a chance to call initializeApp() first.
+ * (At module-load time admin.apps is still empty.)
+ */
+function resolveFirestore(): boolean {
+  if (firestoreResolved) return firestoreModule !== null;
+  firestoreResolved = true;
+  try {
+    const admin = require('firebase-admin');
+    if (admin.apps?.length) {
+      firestoreModule = require('firebase-admin/firestore');
+    }
+  } catch {
+    // Firestore not available — run in-memory only
   }
-} catch {
-  // Firestore not available — run in-memory only
+  return firestoreModule !== null;
 }
 
 function getDb(): any {
-  if (!initialized || !firestore) return null;
+  if (!resolveFirestore()) return null;
   try {
-    return firestore.getFirestore();
+    return firestoreModule.getFirestore();
   } catch {
     return null;
   }
@@ -182,4 +191,6 @@ export async function saveDailyReward(userId: string, lastClaim: string): Promis
   }
 }
 
-export { initialized as persistenceAvailable };
+export function persistenceAvailable(): boolean {
+  return resolveFirestore();
+}

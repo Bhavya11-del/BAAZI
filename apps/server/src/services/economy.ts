@@ -81,6 +81,7 @@ class EconomyService {
     wallet.balance -= amount;
     wallet.lifetimeSpent += amount;
     this.addTransaction(userId, 'buy_in', -amount, `Buy-in for ${game}`, game);
+    console.log(`[ECONOMY] Buy-in deducted: user=${userId.slice(0,8)} amount=${amount} game=${game} newBalance=${wallet.balance}`);
     return true;
   }
 
@@ -89,11 +90,15 @@ class EconomyService {
    * Pool amount was already collected via buy-ins at match start.
    */
   rewardPrize(userId: string, amount: number, game: string): number {
-    if (amount <= 0) return 0;
+    if (amount <= 0) {
+      console.log(`[ECONOMY] SKIP rewardPrize: amount=${amount} <= 0 for user=${userId.slice(0,8)}`);
+      return 0;
+    }
     const wallet = this.getWallet(userId);
     wallet.balance += amount;
     wallet.lifetimeEarned += amount;
     this.addTransaction(userId, 'match_win', amount, `Prize from ${game}`, game);
+    console.log(`[ECONOMY] Winner payout: user=${userId.slice(0,8)} amount=${amount} game=${game} newBalance=${wallet.balance}`);
     return amount;
   }
 
@@ -144,9 +149,10 @@ class EconomyService {
 
   private addTransaction(userId: string, type: TransactionType, amount: number, description: string, game?: string) {
     const wallet = this.wallets.get(userId)!;
+    const balanceBefore = wallet.balance - amount;
     const tx: Transaction = {
       id: uuidv4(), userId, type, amount,
-      balanceBefore: wallet.balance - (amount > 0 ? amount : 0),
+      balanceBefore,
       balanceAfter: wallet.balance,
       description, game, createdAt: new Date().toISOString(),
     };
@@ -165,6 +171,8 @@ class EconomyService {
     // Persist to Firestore
     saveWallet(userId, wallet);
     saveTransactions(userId, txs);
+    console.log(`[ECONOMY] Transaction saved: user=${userId.slice(0,8)} type=${type} amount=${amount} balanceBefore=${balanceBefore} balanceAfter=${wallet.balance}`);
+    console.log(`[ECONOMY] Wallet saved: user=${userId.slice(0,8)} balance=${wallet.balance} earned=${wallet.lifetimeEarned} spent=${wallet.lifetimeSpent}`);
   }
 }
 
