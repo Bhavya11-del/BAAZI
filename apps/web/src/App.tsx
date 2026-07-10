@@ -24,6 +24,19 @@ function AppContent() {
     if (user) connect(user.token);
   }, [user, initialized]);
 
+  if (!initialized) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-felt-darker">
+        <div className="text-center">
+          <div className="w-16 h-16 mx-auto mb-4 rounded-full bg-gradient-to-br from-gold to-gold-dark flex items-center justify-center">
+            <span className="text-2xl">🃏</span>
+          </div>
+          <div className="text-gold font-cinzel text-xl font-bold animate-pulse">Loading...</div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen">
       <Navbar />

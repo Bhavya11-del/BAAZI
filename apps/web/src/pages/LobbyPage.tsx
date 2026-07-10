@@ -16,7 +16,7 @@ const GAMES = [
 
 export default function LobbyPage() {
   const navigate = useNavigate();
-  const { user, loginAsGuest } = useAuthStore();
+  const { user, initialized, loginAsGuest } = useAuthStore();
   const { socket, connect, connected } = useSocketStore();
   const { setRoom, setRoomId } = useGameStore();
 
@@ -38,6 +38,7 @@ export default function LobbyPage() {
 
   // Ensure user and socket are ready before setting up listeners
   useEffect(() => {
+    if (!initialized) return;
     if (!user) { loginAsGuest(); return; }
     if (!socket) { connect(user.token); return; }
     if (!connected) return;
@@ -103,7 +104,7 @@ export default function LobbyPage() {
       socket.off('error', handleError);
       listenersInitialized.current = false;
     };
-  }, [user, socket, connected]);
+  }, [user, initialized, socket, connected]);
 
   // Fetch daily reward status
   useEffect(() => {
