@@ -36,7 +36,7 @@ export const useSocketStore = create<SocketStore>((set, get) => ({
 
     set({ connected: false });
 
-    const socket = io('http://localhost:3001', {
+    const socket = io(import.meta.env.VITE_SOCKET_URL || 'http://localhost:3001', {
       auth: { token, reconnectToken },
       transports: ['websocket'],
       reconnection: true,

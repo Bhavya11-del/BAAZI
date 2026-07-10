@@ -3,10 +3,12 @@
   "version": "1.0.0",
   "scripts": {
     "dev": "ts-node-dev --respawn --transpile-only src/index.ts",
-    "build": "tsc",
+    "build": "npm run build:shared && tsc",
+    "build:shared": "cd ../../packages/shared && npm run build",
     "start": "node dist/index.js"
   },
   "dependencies": {
+    "@card-kings/shared": "*",
     "bcryptjs": "^2.4.3",
     "cors": "^2.8.5",
     "express": "^4.18.2",

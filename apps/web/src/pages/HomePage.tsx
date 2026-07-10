@@ -57,7 +57,7 @@ export default function HomePage() {
   const [loadingGame, setLoadingGame] = useState<string | null>(null);
 
   useEffect(() => {
-    axios.get('http://localhost:3001/api/leaderboard')
+    axios.get(import.meta.env.VITE_API_URL + '/api/leaderboard')
       .then(r => setLeaderboard(r.data.slice(0, 8)))
       .catch(() => {});
   }, []);

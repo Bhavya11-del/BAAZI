@@ -28,7 +28,7 @@ export default function ProfilePage() {
       setUser(currentUser);
       setLoading(false);
     } else {
-      axios.get(`http://localhost:3001/api/auth/profile/${targetId}`)
+      axios.get(import.meta.env.VITE_API_URL + `/api/auth/profile/${targetId}`)
         .then(res => { setUser(res.data); setLoading(false); })
         .catch(() => { navigate('/'); });
     }

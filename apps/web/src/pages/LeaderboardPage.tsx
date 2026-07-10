@@ -11,7 +11,7 @@ export default function LeaderboardPage() {
   const navigate = useNavigate();
 
   useEffect(() => {
-    axios.get('http://localhost:3001/api/leaderboard')
+    axios.get(import.meta.env.VITE_API_URL + '/api/leaderboard')
       .then(res => { setUsers(res.data); setLoading(false); })
       .catch(() => setLoading(false));
   }, []);

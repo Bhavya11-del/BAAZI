@@ -10,7 +10,7 @@ import {
   initCallBreak, dealCallBreak, placeBid, playCard, advanceCallBreakTrick,
   initMendicot, dealMendicot, playMendicotCard, advanceMendicotTrick,
   getTeenPattiBotAction, getCallBreakBotBid, getCallBreakBotCard, getMendicotBotCard,
-} from '../../../../packages/shared/src/index';
+} from '@card-kings/shared';
 
 export type GameType = 'teen-patti' | 'call-break' | 'mendicot';
 

@@ -108,7 +108,7 @@ export default function LobbyPage() {
   // Fetch daily reward status
   useEffect(() => {
     if (user?.token) {
-      axios.get('http://localhost:3001/api/economy/daily-reward/status', {
+      axios.get(import.meta.env.VITE_API_URL + '/api/economy/daily-reward/status', {
         headers: { Authorization: `Bearer ${user.token}` },
       }).then(res => setDailyRewardStatus(res.data)).catch(() => {});
     }
@@ -117,7 +117,7 @@ export default function LobbyPage() {
   const handleClaimDailyReward = async () => {
     if (!user?.token) return;
     try {
-      const res = await axios.post('http://localhost:3001/api/economy/daily-reward', {}, {
+      const res = await axios.post(import.meta.env.VITE_API_URL + '/api/economy/daily-reward', {}, {
         headers: { Authorization: `Bearer ${user.token}` },
       });
       const { success, balance, message } = res.data;

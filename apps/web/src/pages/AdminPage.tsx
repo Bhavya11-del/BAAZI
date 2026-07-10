@@ -17,8 +17,8 @@ export default function AdminPage() {
       return;
     }
     Promise.all([
-      axios.get('http://localhost:3001/api/auth/stats').catch(() => null),
-      axios.get('http://localhost:3001/api/leaderboard').catch(() => null),
+      axios.get(import.meta.env.VITE_API_URL + '/api/auth/stats').catch(() => null),
+      axios.get(import.meta.env.VITE_API_URL + '/api/leaderboard').catch(() => null),
     ]).then(([statsRes, lbRes]) => {
       const serverStats = statsRes?.data || {};
       const totalUsers = serverStats.totalUsers ?? (lbRes?.data?.length ?? '-');
