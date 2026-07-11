@@ -16,7 +16,7 @@ interface SocialAuthProvider {
 class FirebaseProvider implements SocialAuthProvider {
   async verify(token: string): Promise<SocialProfile> {
     if (!getApps().length) {
-      throw Object.assign(new Error('Firebase Admin is not initialized. Set FIREBASE_PROJECT_ID in apps/server/.env and configure credentials.'), { code: 'app/no-app' });
+      throw Object.assign(new Error('Firebase Admin unavailable — check server env configuration'), { code: 'app/no-app' });
     }
     const decoded = await getAuth().verifyIdToken(token);
     console.log('[TRACE FirebaseProvider.verify] decoded token:', JSON.stringify({ uid: decoded.uid, email: decoded.email, name: decoded.name, picture: decoded.picture }, null, 2));

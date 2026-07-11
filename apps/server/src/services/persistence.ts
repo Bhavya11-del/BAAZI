@@ -1,45 +1,13 @@
 import { v4 as uuidv4 } from 'uuid';
 
-let firestoreModule: any = null;
-let firestoreResolved = false;
+let db: any = null;
 
-/**
- * Eagerly initialise the Firestore reference. Returns true if Firestore is available.
- */
-export function initFirestore(): boolean {
-  if (firestoreResolved) return firestoreModule !== null;
-  firestoreResolved = true;
-  try {
-    const admin = require('firebase-admin');
-    if (admin.apps?.length) {
-      firestoreModule = require('firebase-admin/firestore');
-      if (firestoreModule) {
-        console.log('[FIRESTORE] Firestore module loaded');
-        return true;
-      }
-    }
-    console.warn('[FIRESTORE] Firebase Admin not yet initialized — Firestore unavailable');
-    return false;
-  } catch (err) {
-    console.warn('[FIRESTORE] Failed to load Firestore module:', err);
-    return false;
-  }
-}
-
-export function isFirestoreAvailable(): boolean {
-  return firestoreModule !== null;
+export function setFirestoreDb(firestoreDb: any): void {
+  db = firestoreDb;
 }
 
 function getDb(): any {
-  if (!firestoreModule) {
-    if (!initFirestore()) return null;
-  }
-  try {
-    return firestoreModule.getFirestore();
-  } catch (err) {
-    console.warn('[FIRESTORE] getFirestore() failed:', err);
-    return null;
-  }
+  return db;
 }
 
 // ── User Data ──────────────────────────────────────────────────
@@ -256,6 +224,4 @@ export async function saveDailyReward(userId: string, lastClaim: string): Promis
   }
 }
 
-export function persistenceAvailable(): boolean {
-  return isFirestoreAvailable();
-}
+
