@@ -129,11 +129,15 @@ async function start() {
       setFirestoreDb(db);
       console.log('✓ Firestore initialized');
 
-      await db.collection('_health').doc('_check').get();
+      await db.collection('_health').limit(1).get();
       console.log('✓ Firestore connection verified');
     } catch (err) {
-      console.error('✗ Firestore initialization FAILED:', err);
-      process.exit(1);
+      console.error('❌ Firestore verification failed');
+      console.error(err);
+      if (err instanceof Error) {
+        console.error(err.stack);
+      }
+      throw err;
     }
   }
 
@@ -153,5 +157,8 @@ async function start() {
 
 start().catch((err) => {
   console.error('✗ Startup failed:', err);
+  if (err instanceof Error) {
+    console.error(err.stack);
+  }
   process.exit(1);
 });
