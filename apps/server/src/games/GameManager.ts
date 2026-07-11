@@ -252,6 +252,7 @@ export class GameManager {
     if (room.players.filter(p => !p.isBot).length < 1) return;
 
     // Deduct buy-in from all human players at match start
+    console.log(`[MATCH START] room=${roomId.slice(0,8)} game=${room.game} buyIn=${room.buyIn} isRanked=${room.isRanked} humans=${room.players.filter(p => !p.isBot).length} bots=${room.players.filter(p => p.isBot).length}`);
     if (room.buyIn > 0) {
       for (const p of room.players) {
         if (!p.isBot && !economyService.deductBuyIn(p.id, room.buyIn, room.game)) {
@@ -259,8 +260,11 @@ export class GameManager {
           io.to(roomId).emit('error', { message: 'A player cannot afford the buy-in. Aborting.' });
           room.status = 'waiting';
           return;
+        } else if (!p.isBot) {
+          console.log(`[BUY-IN DEDUCTED] user=${p.id.slice(0,8)} amount=${room.buyIn} game=${room.game} balance=${economyService.getBalance(p.id)}`);
         }
       }
+      console.log(`[PRIZE POOL] totalPool=${room.buyIn * room.players.filter(p => !p.isBot).length} buyIn=${room.buyIn} humanPlayers=${room.players.filter(p => !p.isBot).length}`);
     }
 
     // For ranked matches, auto-select bot difficulty based on player skill
@@ -848,14 +852,19 @@ export class GameManager {
   }
 
   private handleGameEnd(roomId: string, state: any, room: Room, io: Server) {
+    console.log(`[TRACE handleGameEnd] ENTERED room=${roomId.slice(0,8)} game=${room.game} phase=${state.phase} isRanked=${room.isRanked} buyIn=${room.buyIn}`);
     io.to(roomId).emit('game:roundEnd', { state });
 
-    console.log(`[ELO] Match complete: room=${roomId.slice(0,8)} game=${room.game} phase=${state.phase} isRanked=${room.isRanked} buyIn=${room.buyIn}`);
+    console.log(`[MATCH END] room=${roomId.slice(0,8)} game=${room.game} phase=${state.phase} isRanked=${room.isRanked} buyIn=${room.buyIn}`);
 
     const isFinalPhase = state.phase === 'GAME_OVER'
       || (room.game === 'teen-patti' && state.phase === 'RESULT')
       || (room.game === 'mendicot' && state.phase === 'SCORING');
-    if (!isFinalPhase) return;
+    console.log(`[TRACE handleGameEnd] isFinalPhase=${isFinalPhase} (phase=${state.phase} game=${room.game})`);
+    if (!isFinalPhase) {
+      console.log(`[TRACE handleGameEnd] EARLY RETURN — not final phase`);
+      return;
+    }
 
     // Prevent duplicate distribution
     if (room.prizeDistributed) {
@@ -863,6 +872,7 @@ export class GameManager {
       return;
     }
     room.prizeDistributed = true;
+    console.log(`[TRACE handleGameEnd] prizeDistributed set to true`);
 
     const allPlayers: any[] = state.players || [];
     const winnerId = state.winner as string | undefined;
@@ -872,27 +882,38 @@ export class GameManager {
     const botPlayers = allPlayers.filter((p: any) => p.isBot);
     const hasBots = botPlayers.length > 0;
 
+    console.log(`[MATCH END] totalPlayers=${allPlayers.length} humans=${humanPlayers.length} active=${activeHumans.length} abandoned=${abandonedHumans.length} bots=${botPlayers.length}`);
+    console.log(`[TRACE handleGameEnd] state.winner=${winnerId || '(none)'}`);
+    console.log(`[TRACE handleGameEnd] allPlayers IDs: ${allPlayers.map((p: any) => p.id.slice(0,8) + '(' + (p.isBot ? 'bot' : 'human') + ')').join(', ')}`);
+
     // ── Determine winner set (could be multiple in team games) ──
     let winnerIds: string[] = [];
     let isTeamGame = false;
 
     if (room.game === 'mendicot') {
-      // Mendicot: team-based winner
       const winningTeamId = state.roundWinner;
       if (winningTeamId !== undefined && winningTeamId !== null) {
         isTeamGame = true;
         winnerIds = allPlayers
           .filter((p: any) => p.teamId === winningTeamId && !room.abandonedPlayers.has(p.id))
           .map((p: any) => p.id);
+        console.log(`[MATCH END] Mendicot team winner: teamId=${winningTeamId} winnerIds=${JSON.stringify(winnerIds)}`);
+      } else {
+        console.log(`[MATCH END] Mendicot no roundWinner — cannot determine winners`);
       }
     } else if (room.game === 'call-break' && state.phase === 'GAME_OVER') {
       const cbWinner = getCallBreakWinner(state);
       if (cbWinner) {
         winnerIds = [cbWinner.id];
+        console.log(`[MATCH END] Call Break winner: id=${cbWinner.id} name=${cbWinner.name}`);
+      } else {
+        console.log(`[MATCH END] Call Break no winner found from getCallBreakWinner`);
       }
     } else if (winnerId) {
-      // FFA games (teen-patti): single winner
       winnerIds = [winnerId];
+      console.log(`[MATCH END] FFA winner: id=${winnerId}`);
+    } else {
+      console.log(`[MATCH END] No winner identified`);
     }
 
     // Filter out abandoned players from winners
@@ -902,93 +923,169 @@ export class GameManager {
       .filter((p: any) => !winnerIds.includes(p.id))
       .map((p: any) => p.id);
 
+    console.log(`[MATCH END] final winners=${JSON.stringify(winnerIds)} losers=${JSON.stringify(loserIds)}`);
+
     // ── Prize Pool Distribution ──
     if (room.buyIn > 0) {
-      // Count only non-abandoned human players who paid buy-in
       const payingPlayersCount = activeHumans.length;
       const totalPool = room.buyIn * (payingPlayersCount + abandonedHumans.length);
 
-      console.log(`[ECONOMY] Prize pool: totalPool=${totalPool} buyIn=${room.buyIn} paying=${payingPlayersCount} abandoned=${abandonedHumans.length} winners=${JSON.stringify(winnerIds)}`);
+      console.log(`[PRIZE POOL] totalPool=${totalPool} buyIn=${room.buyIn} paying=${payingPlayersCount} abandoned=${abandonedHumans.length} winners=${JSON.stringify(winnerIds)}`);
 
       if (winnerIds.length > 0 && payingPlayersCount > 0) {
         if (isTeamGame) {
-          // Split pool equally among winning team members
           const share = Math.floor(totalPool / winnerIds.length);
           let remainder = totalPool - share * winnerIds.length;
           for (const wid of winnerIds) {
             const amount = remainder > 0 ? share + 1 : share;
             economyService.rewardPrize(wid, amount, room.game);
+            console.log(`[ECONOMY UPDATE] team prize: user=${wid.slice(0,8)} amount=${amount} newBalance=${economyService.getBalance(wid)}`);
             if (remainder > 0) remainder--;
           }
         } else {
-          // FFA: winner takes all
           economyService.rewardPrize(winnerIds[0], totalPool, room.game);
+          console.log(`[ECONOMY UPDATE] FFA prize: user=${winnerIds[0].slice(0,8)} amount=${totalPool} newBalance=${economyService.getBalance(winnerIds[0])}`);
         }
       } else {
         console.log(`[ECONOMY] SKIP payout: winnerIds.length=${winnerIds.length} payingPlayersCount=${payingPlayersCount}`);
       }
+
+      // ── Record match_loss for active losers ──
+      for (const lid of loserIds) {
+        economyService.recordMatchLoss(lid, room.buyIn, room.game);
+        console.log(`[ECONOMY UPDATE] match loss: user=${lid.slice(0,8)} buyIn=${room.buyIn}`);
+      }
+    } else {
+      console.log(`[TRACE handleGameEnd] SKIP prize distribution — room.buyIn=${room.buyIn} (<= 0)`);
     }
 
     // ── Record abandoned players ──
     for (const p of abandonedHumans) {
       economyService.recordAbandoned(p.id, room.game, room.buyIn);
       eloService.recordAbandoned(p.id, room.game, room.isRanked, room.buyIn, 'Player left match');
+      console.log(`[ECONOMY UPDATE] abandoned: user=${p.id.slice(0,8)} game=${room.game} buyIn=${room.buyIn}`);
     }
 
     // ── ELO update for ranked matches ──
+    console.log(`[TRACE handleGameEnd] ELO section: room.isRanked=${room.isRanked} winnerIds.length=${winnerIds.length} humanWinnersCount=${winnerIds.filter(w => !allPlayers.find((p: any) => p.id === w)?.isBot).length} humanLosersCount=${loserIds.length}`);
     if (room.isRanked && winnerIds.length > 0) {
-      console.log(`[ELO] Ranked match: humanWinners=${winnerIds.filter(w => !allPlayers.find((p: any) => p.id === w)?.isBot).length} humanLosers=${loserIds.length} isTeamGame=${isTeamGame}`);
+      console.log(`[ELO] Ranked match START: humanWinners=${winnerIds.filter(w => !allPlayers.find((p: any) => p.id === w)?.isBot).length} humanLosers=${loserIds.length} isTeamGame=${isTeamGame}`);
       const humanWinners = winnerIds.filter(w => !allPlayers.find((p: any) => p.id === w)?.isBot);
       const humanLosers = loserIds;
+      console.log(`[TRACE handleGameEnd] humanWinners (after bot filter): ${JSON.stringify(humanWinners)} | humanLosers: ${JSON.stringify(humanLosers)}`);
 
       if (isTeamGame) {
+        console.log(`[TRACE handleGameEnd] isTeamGame branch`);
         if (humanWinners.length > 0) {
           for (const wId of humanWinners) {
             for (const lId of humanLosers) {
               if (wId !== lId) {
-                eloService.applyRanked(wId, lId, room.game, hasBots, room.buyIn);
+                const result = eloService.applyRanked(wId, lId, room.game, hasBots, room.buyIn);
+                console.log(`[ELO UPDATE] team ranked: winner=${wId.slice(0,8)} loser=${lId.slice(0,8)} winnerChange=${result.winnerChange} loserChange=${result.loserChange}`);
               }
             }
           }
         } else if (humanLosers.length > 0) {
-          // All winners were bots — humans lost to bots in team game
           for (const lId of humanLosers) {
-            eloService.applyRankedVsBot(lId, false, room.game, room.difficulty, room.buyIn);
+            const change = eloService.applyRankedVsBot(lId, false, room.game, room.difficulty, room.buyIn);
+            console.log(`[ELO UPDATE] team vs bot: loser=${lId.slice(0,8)} change=${change}`);
           }
         }
       } else if (humanWinners.length > 0) {
+        console.log(`[TRACE handleGameEnd] FFA ranked with humanWinner branch`);
         const mainWinner = humanWinners[0];
         if (humanLosers.length > 0) {
-          // Human vs human — some also bots present
           for (const lId of humanLosers) {
-            eloService.applyRanked(mainWinner, lId, room.game, hasBots, room.buyIn);
+            const result = eloService.applyRanked(mainWinner, lId, room.game, hasBots, room.buyIn);
+            console.log(`[ELO UPDATE] FFA ranked: winner=${mainWinner.slice(0,8)} loser=${lId.slice(0,8)} winnerChange=${result.winnerChange} loserChange=${result.loserChange}`);
           }
         } else {
-          // Human won against bots only
-          eloService.applyRankedVsBot(mainWinner, true, room.game, room.difficulty, room.buyIn);
+          console.log(`[TRACE handleGameEnd] FFA ranked vs bot branch`);
+          const change = eloService.applyRankedVsBot(mainWinner, true, room.game, room.difficulty, room.buyIn);
+          console.log(`[ELO UPDATE] FFA vs bot: winner=${mainWinner.slice(0,8)} change=${change}`);
         }
       } else if (humanLosers.length > 0) {
-        // No human winner — human(s) lost to bots
+        console.log(`[TRACE handleGameEnd] FFA ranked all losers branch`);
         for (const lId of humanLosers) {
-          eloService.applyRankedVsBot(lId, false, room.game, room.difficulty, room.buyIn);
+          const change = eloService.applyRankedVsBot(lId, false, room.game, room.difficulty, room.buyIn);
+          console.log(`[ELO UPDATE] all vs bot: loser=${lId.slice(0,8)} change=${change}`);
         }
+      } else {
+        console.log(`[TRACE handleGameEnd] FFA ranked — NO human winners or losers found (all bots?)`);
       }
     } else if (room.isRanked) {
       console.log(`[ELO] SKIP ranked ELO: winnerIds.length=0 — no winner identified`);
     } else if (!room.isRanked) {
+      console.log(`[TRACE handleGameEnd] Casual match section entered`);
       console.log(`[ELO] Casual match: activeHumans=${activeHumans.length} winnerIds=${JSON.stringify(winnerIds)}`);
-      // Record casual match history for active players
       for (const p of activeHumans) {
         const result = winnerIds.includes(p.id) ? 'win' as const : 'loss' as const;
         const opponentName = winnerIds.length > 0
           ? allPlayers.find((o: any) => o.id === winnerIds[0])?.name || 'Unknown'
           : 'Unknown';
         eloService.recordCasual(p.id, winnerIds[0] || '', opponentName, room.game, result, 0, room.buyIn);
+        console.log(`[ELO UPDATE] casual: user=${p.id.slice(0,8)} result=${result}`);
+      }
+    } else {
+      console.log(`[TRACE handleGameEnd] ELO — unexpected fallthrough`);
+    }
+
+    // ── Emit updated user data to all affected clients ──
+    console.log(`[TRACE handleGameEnd] Emitting user:updated to ${allPlayers.filter(p => !p.isBot).length} human players`);
+    for (const p of allPlayers) {
+      if (!p.isBot) {
+        const user = userStore.findById(p.id);
+        if (user) {
+          console.log(`[SOCKET USER UPDATE] user=${user.id.slice(0,8)} name=${user.name} elo=${user.elo} chips=${user.chips} wins=${user.wins} losses=${user.losses}`);
+          const sockets = io.sockets.adapter.rooms.get(roomId);
+          console.log(`[TRACE handleGameEnd] room ${roomId.slice(0,8)} has ${sockets?.size || 0} sockets`);
+          if (sockets) {
+            for (const socketId of sockets) {
+              const socket = io.sockets.sockets.get(socketId);
+              if (socket && (socket as any).userId === user.id) {
+                console.log(`[TRACE handleGameEnd] emitting user:updated to socket ${socketId.slice(0,8)} for user ${user.id.slice(0,8)}`);
+                socket.emit('user:updated', {
+                  userId: user.id,
+                  user: {
+                    id: user.id,
+                    name: user.name,
+                    email: user.email,
+                    avatar: user.avatar,
+                    elo: user.elo,
+                    highestElo: user.highestElo,
+                    level: user.level,
+                    xp: user.xp,
+                    wins: user.wins,
+                    losses: user.losses,
+                    gamesPlayed: user.gamesPlayed,
+                    rankedWins: user.rankedWins,
+                    rankedLosses: user.rankedLosses,
+                    rankedGames: user.rankedGames,
+                    chips: user.chips,
+                    lifetimeEarned: user.lifetimeEarned,
+                    lifetimeSpent: user.lifetimeSpent,
+                    achievements: user.achievements,
+                  },
+                });
+                console.log(`[SOCKET USER UPDATE] emitted to socket ${socketId.slice(0,8)} for user ${user.id.slice(0,8)}`);
+                break;
+              } else {
+                console.log(`[TRACE handleGameEnd] socket ${socketId.slice(0,8)} has userId=${(socket as any)?.userId?.slice(0,8) || '?'}, looking for ${user.id.slice(0,8)}`);
+              }
+            }
+          }
+        } else {
+          console.log(`[SOCKET USER UPDATE] SKIP — user not found in userStore: ${p.id.slice(0,8)}`);
+        }
       }
     }
+    io.emit('leaderboard:update');
+    console.log(`[LEADERBOARD UPDATE] broadcast to all clients`);
 
     room.status = 'finished';
     io.to(roomId).emit('game:finished', { state });
+    console.log(`[GAME FINISHED] room=${roomId.slice(0,8)} status=finished`);
+    console.log(`[TRACE handleGameEnd] cleanupRoom will be called`);
     this.cleanupRoom(roomId, io);
   }
 

@@ -1,8 +1,8 @@
 import { v4 as uuidv4 } from 'uuid';
 import bcrypt from 'bcryptjs';
-import { STARTING_ELO, MIN_ELO, MAX_ELO } from '../services/elo';
+import { STARTING_ELO } from '../services/elo';
 import { SocialProfile } from './socialAuth';
-import { loadAllUsers, saveUser, loadUserById, loadUserByFirebaseUid } from '../services/persistence';
+import { loadAllUsers, saveUser, loadUserById, loadUserByFirebaseUid, createUserDocument } from '../services/persistence';
 
 export interface User {
   id: string;
@@ -30,32 +30,15 @@ export interface User {
   firebaseUid?: string;
 }
 
-const SEED_PLAYERS = [
-  { name: 'RajKing99', elo: 1850, wins: 487, losses: 112 },
-  { name: 'MumbaiAce', elo: 1720, wins: 382, losses: 145 },
-  { name: 'DelhiShark', elo: 1650, wins: 310, losses: 130 },
-  { name: 'ChennaiBluff', elo: 1550, wins: 265, losses: 140 },
-  { name: 'PuneTeen', elo: 1480, wins: 201, losses: 110 },
-  { name: 'BengaluruBot', elo: 1400, wins: 178, losses: 105 },
-  { name: 'HyderabadAce', elo: 1320, wins: 155, losses: 98 },
-  { name: 'KolkataKing', elo: 1250, wins: 130, losses: 90 },
-  { name: 'JaipurJoker', elo: 1180, wins: 112, losses: 88 },
-  { name: 'AhmedabadAce', elo: 1100, wins: 95, losses: 80 },
-];
-
 class UserStore {
   private users: Map<string, User> = new Map();
   private emailIndex: Map<string, string> = new Map();
   private firebaseUidIndex: Map<string, string> = new Map();
 
-  constructor() {
-    this.seedUsers();
-  }
-
   async loadFromFirestore(): Promise<void> {
     const data = await loadAllUsers();
     if (Object.keys(data).length === 0) return;
-    // Merge Firestore data over seed data (prefer Firestore as source of truth)
+    // Load Firestore users — no hardcoded seed users
     for (const [id, record] of Object.entries(data)) {
       const user: User = {
         id,
@@ -86,39 +69,6 @@ class UserStore {
       if (user.email) this.emailIndex.set(user.email, id);
       if (user.firebaseUid) this.firebaseUidIndex.set(user.firebaseUid, id);
     }
-  }
-
-  private seedUsers() {
-    SEED_PLAYERS.forEach(p => {
-      const id = uuidv4();
-      const gamesPlayed = p.wins + p.losses;
-      const user: User = {
-        id,
-        email: `${p.name.toLowerCase()}@cardkings.in`,
-        name: p.name,
-        passwordHash: '',
-        avatar: `https://api.dicebear.com/7.x/avataaars/svg?seed=${p.name}`,
-        elo: p.elo,
-        highestElo: p.elo,
-        level: Math.floor(p.wins / 10) + 1,
-        xp: p.wins * 100 + p.losses * 25,
-        wins: p.wins,
-        losses: p.losses,
-        gamesPlayed,
-        rankedWins: Math.floor(p.wins * 0.6),
-        rankedLosses: Math.floor(p.losses * 0.6),
-        rankedGames: Math.floor(gamesPlayed * 0.6),
-        chips: 2000 + p.wins * 10,
-        lifetimeEarned: 5000 + p.wins * 15,
-        lifetimeSpent: 1000 + p.losses * 5,
-        achievements: ['first_win', 'games_10'],
-        friends: [],
-        createdAt: new Date().toISOString(),
-        isGuest: false,
-      };
-      this.users.set(id, user);
-      this.emailIndex.set(user.email, id);
-    });
   }
 
   async createUser(email: string, name: string, password: string): Promise<User | null> {
@@ -231,11 +181,48 @@ class UserStore {
     return this.users.get(id);
   }
 
-  createSocialUser(profile: SocialProfile, guestData?: any): User {
-    const id = uuidv4();
+  /**
+   * Look up a social user by firebaseUid in Firestore.
+   * If found: hydrate into in-memory cache and return.
+   * If not found: create a new user document in Firestore with defaults, hydrate, return.
+   * Never throws — never rejects a valid Firebase user.
+   */
+  async findOrCreateSocialUser(profile: SocialProfile, guestData?: any): Promise<User> {
     const firebaseUid = profile.provider === 'firebase' ? profile.providerId : undefined;
+
+    if (firebaseUid) {
+      // 1. Check in-memory cache first
+      const cachedId = this.firebaseUidIndex.get(firebaseUid);
+      if (cachedId) {
+        const cached = this.users.get(cachedId);
+        if (cached) {
+          console.log(`[FIRESTORE] User found in cache: ${cachedId.slice(0, 12)}`);
+          return cached;
+        }
+      }
+
+      // 2. Look up in Firestore by firebaseUid
+      console.log('[FIRESTORE] Reading user...');
+      const record = await loadUserByFirebaseUid(firebaseUid);
+      if (record) {
+        console.log('[FIRESTORE] User found');
+        const user: User = this.hydrateUser(record.id, record);
+        return user;
+      }
+      console.log('[FIRESTORE] User not found');
+    }
+
+    // 3. Not found anywhere — create a brand new user
+    console.log('[FIRESTORE] Creating user');
+    const id = uuidv4();
+    const now = new Date().toISOString();
+    const startingChips = Math.max(guestData?.chips ?? 0, 1000);
+
     const user: User = {
-      id, email: profile.email, name: profile.name, passwordHash: '',
+      id,
+      email: profile.email,
+      name: profile.name,
+      passwordHash: '',
       avatar: profile.avatar,
       elo: guestData?.elo ?? STARTING_ELO,
       highestElo: guestData?.highestElo ?? STARTING_ELO,
@@ -247,19 +234,63 @@ class UserStore {
       rankedWins: guestData?.rankedWins ?? 0,
       rankedLosses: 0,
       rankedGames: guestData?.rankedGames ?? 0,
-      chips: Math.max(guestData?.chips ?? 0, 1000),
+      chips: startingChips,
       lifetimeEarned: guestData?.lifetimeEarned ?? 0,
       lifetimeSpent: guestData?.lifetimeSpent ?? 0,
       achievements: guestData?.achievements ?? [],
       friends: [],
-      createdAt: new Date().toISOString(),
+      createdAt: now,
       isGuest: false,
       firebaseUid,
     };
+
+    // Write user document to Firestore
+    const created = await createUserDocument(id, user);
+    if (!created) {
+      console.warn('[FIRESTORE] createUserDocument returned false — user may not be persisted');
+    }
+
+    // Hydrate in-memory caches
     this.users.set(id, user);
-    this.emailIndex.set(profile.email, id);
+    if (user.email) this.emailIndex.set(user.email, id);
     if (firebaseUid) this.firebaseUidIndex.set(firebaseUid, id);
-    saveUser(id, user);
+
+    console.log('[FIRESTORE] User created');
+    return user;
+  }
+
+  /**
+   * Hydrate a plain Firestore record into a User object and cache it.
+   */
+  private hydrateUser(id: string, record: any): User {
+    const user: User = {
+      id,
+      email: record.email || '',
+      name: record.name || 'Player',
+      passwordHash: record.passwordHash || '',
+      avatar: record.avatar || `https://api.dicebear.com/7.x/avataaars/svg?seed=${id}`,
+      elo: record.elo ?? STARTING_ELO,
+      highestElo: record.highestElo ?? STARTING_ELO,
+      level: record.level ?? 1,
+      xp: record.xp ?? 0,
+      wins: record.wins ?? 0,
+      losses: record.losses ?? 0,
+      gamesPlayed: record.gamesPlayed ?? 0,
+      rankedWins: record.rankedWins ?? 0,
+      rankedLosses: record.rankedLosses ?? 0,
+      rankedGames: record.rankedGames ?? 0,
+      chips: record.chips ?? 1000,
+      lifetimeEarned: record.lifetimeEarned ?? 0,
+      lifetimeSpent: record.lifetimeSpent ?? 0,
+      achievements: record.achievements ?? [],
+      friends: record.friends ?? [],
+      createdAt: record.createdAt || new Date().toISOString(),
+      isGuest: record.isGuest ?? false,
+      firebaseUid: record.firebaseUid || undefined,
+    };
+    this.users.set(id, user);
+    if (user.email) this.emailIndex.set(user.email, id);
+    if (user.firebaseUid) this.firebaseUidIndex.set(user.firebaseUid, id);
     return user;
   }
 

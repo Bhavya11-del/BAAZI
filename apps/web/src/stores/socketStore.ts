@@ -30,6 +30,15 @@ export const useSocketStore = create<SocketStore>((set, get) => ({
 
     if (!token) token = 'guest_token';
 
+    console.log('[CLIENT socketStore.connect] connecting with token type:', token.startsWith('guest_') ? 'guest' : 'jwt', 'token preview:', token.substring(0, 30) + '...');
+    if (token.startsWith('eyJ')) {
+      try {
+        const parts = token.split('.');
+        const payload = JSON.parse(atob(parts[1]));
+        console.log('[CLIENT socketStore.connect] JWT payload:', JSON.stringify({ userId: payload.userId, firebaseUid: payload.firebaseUid || '(none)' }));
+      } catch (e) {}
+    }
+
     if (existing?.connected && currentAuthToken === token) return;
 
     if (existing) {
@@ -97,6 +106,15 @@ export const useSocketStore = create<SocketStore>((set, get) => ({
       if (data.reconnectToken) {
         set({ reconnectToken: data.reconnectToken });
         localStorage.setItem('cardkings_reconnectToken', data.reconnectToken);
+      }
+    });
+
+    // User data updated (after match for chips/elo/wins/losses sync)
+    socket.on('user:updated', (data: { userId: string; user: any }) => {
+      const authUser = useAuthStore.getState().user;
+      if (authUser && authUser.id === data.userId && data.user) {
+        useAuthStore.getState().updateUser(data.user);
+        console.log('[CLIENT] user:updated — wallet/ELO synced after match', data.user);
       }
     });
 

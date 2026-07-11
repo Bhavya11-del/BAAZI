@@ -2,7 +2,7 @@ import { Server, Socket } from 'socket.io';
 import { GameManager } from '../games/GameManager';
 import { userStore } from '../auth/userStore';
 import { presenceManager } from '../presence';
-import { loadUserById } from '../services/persistence';
+import { loadUserById, loadUserByFirebaseUid } from '../services/persistence';
 import jwt from 'jsonwebtoken';
 
 const JWT_SECRET = process.env.JWT_SECRET || 'cardkings-india-secret-2024';
@@ -58,7 +58,7 @@ export function setupSocketHandlers(io: Server, gameManager: GameManager) {
         // ── 1. Lookup by internal ID (cache first, then Firestore) ──
         let user = await userStore.findByIdAsync(decoded.userId);
         if (user) {
-          console.log(`[SOCKET AUTH] Lookup by internal ID — found: ${user.id}`);
+          console.log(`[SOCKET AUTH] Lookup by internal ID — found: ${user.id.slice(0, 12)}`);
           (socket as any).userId = user.id;
           (socket as any).user = user;
           console.log('[SOCKET AUTH] Accepted');
@@ -70,7 +70,7 @@ export function setupSocketHandlers(io: Server, gameManager: GameManager) {
         if (decoded.firebaseUid) {
           user = await userStore.findByFirebaseUid(decoded.firebaseUid);
           if (user) {
-            console.log(`[SOCKET AUTH] Lookup by Firebase UID — found: ${user.id}`);
+            console.log(`[SOCKET AUTH] Lookup by Firebase UID — found: ${user.id.slice(0, 12)}`);
             (socket as any).userId = user.id;
             (socket as any).user = user;
             console.log('[SOCKET AUTH] Accepted');
@@ -81,11 +81,11 @@ export function setupSocketHandlers(io: Server, gameManager: GameManager) {
           console.log('[SOCKET AUTH] Lookup by Firebase UID — skipped (no firebaseUid in JWT)');
         }
 
-        // ── 3. Direct Firestore query by document ID (final fallback) ──
-        console.log('[SOCKET AUTH] Lookup in Firestore');
+        // ── 3. Direct Firestore query by document ID ────────────────
+        console.log('[SOCKET AUTH] Lookup in Firestore by document ID');
         const record = await loadUserById(decoded.userId);
         if (record) {
-          // Hydrate user into the in-memory cache so subsequent lookups succeed
+          console.log('[SOCKET AUTH] User found in Firestore — hydrating cache');
           const hydrated = {
             id: decoded.userId,
             email: record.email || '',
@@ -118,9 +118,50 @@ export function setupSocketHandlers(io: Server, gameManager: GameManager) {
           console.log('[SOCKET AUTH] Accepted');
           return next();
         }
+        console.log('[SOCKET AUTH] Lookup in Firestore by document ID — not found');
 
-        console.log('[SOCKET AUTH] Lookup in Firestore — not found');
-        console.log('[SOCKET AUTH] Rejected');
+        // ── 4. Final fallback: try Firestore lookup by firebaseUid ─
+        if (decoded.firebaseUid) {
+          console.log('[SOCKET AUTH] Final fallback — Firestore lookup by firebaseUid');
+          const fbRecord = await loadUserByFirebaseUid(decoded.firebaseUid);
+          if (fbRecord) {
+            console.log('[SOCKET AUTH] User found by firebaseUid — hydrating cache');
+            const hydrated = {
+              id: fbRecord.id,
+              email: fbRecord.email || '',
+              name: fbRecord.name || 'Player',
+              passwordHash: fbRecord.passwordHash || '',
+              avatar: fbRecord.avatar || `https://api.dicebear.com/7.x/avataaars/svg?seed=${fbRecord.id}`,
+              elo: fbRecord.elo ?? 800,
+              highestElo: fbRecord.highestElo ?? 800,
+              level: fbRecord.level ?? 1,
+              xp: fbRecord.xp ?? 0,
+              wins: fbRecord.wins ?? 0,
+              losses: fbRecord.losses ?? 0,
+              gamesPlayed: fbRecord.gamesPlayed ?? 0,
+              rankedWins: fbRecord.rankedWins ?? 0,
+              rankedLosses: fbRecord.rankedLosses ?? 0,
+              rankedGames: fbRecord.rankedGames ?? 0,
+              chips: fbRecord.chips ?? 500,
+              lifetimeEarned: fbRecord.lifetimeEarned ?? 0,
+              lifetimeSpent: fbRecord.lifetimeSpent ?? 0,
+              achievements: fbRecord.achievements ?? [],
+              friends: fbRecord.friends ?? [],
+              createdAt: fbRecord.createdAt || new Date().toISOString(),
+              isGuest: fbRecord.isGuest ?? false,
+              firebaseUid: decoded.firebaseUid,
+            } as any;
+            userStore.getOrSetFromFirestore(fbRecord.id, hydrated);
+            (socket as any).userId = hydrated.id;
+            (socket as any).user = hydrated;
+            console.log('[SOCKET AUTH] Hydrated user from firebaseUid lookup');
+            console.log('[SOCKET AUTH] Accepted');
+            return next();
+          }
+          console.log('[SOCKET AUTH] Final fallback — firebaseUid lookup also failed');
+        }
+
+        console.log('[SOCKET AUTH] Rejected — user not found in any lookup');
         next(new Error('User not found'));
       } catch (err) {
         console.log('[SOCKET AUTH] Error:', err);

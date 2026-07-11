@@ -166,12 +166,20 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
     set({ loading: true });
     const currentUser = get().user;
     const guestData = currentUser?.isGuest ? currentUser : undefined;
+    console.log('[CLIENT loginWithGoogle] sending POST /api/auth/social with provider=firebase, guestData=', guestData ? { id: guestData.id, name: guestData.name } : null);
     const res = await axios.post(`${API}/auth/social`, {
       provider: 'firebase',
       token: idToken,
       guestData,
     });
+    console.log('[CLIENT loginWithGoogle] server response:', JSON.stringify({
+      token_preview: res.data.token?.substring(0, 20) + '...',
+      user: { id: res.data.user?.id, email: res.data.user?.email, firebaseUid: res.data.user?.firebaseUid || '(none)' }
+    }, null, 2));
     const user = { ...res.data.user, token: res.data.token };
+    console.log('[CLIENT loginWithGoogle] storing to localStorage:', JSON.stringify({
+      id: user.id, email: user.email, firebaseUid: user.firebaseUid || '(none)', hasToken: !!user.token
+    }));
     localStorage.setItem('cardkings_user', JSON.stringify(user));
     set({ user, loading: false });
     return user;

@@ -4,29 +4,40 @@ let firestoreModule: any = null;
 let firestoreResolved = false;
 
 /**
- * Lazily initialise the Firestore reference on first call so that
- * firebase-admin has been given a chance to call initializeApp() first.
- * (At module-load time admin.apps is still empty.)
+ * Eagerly initialise the Firestore reference. Returns true if Firestore is available.
  */
-function resolveFirestore(): boolean {
+export function initFirestore(): boolean {
   if (firestoreResolved) return firestoreModule !== null;
   firestoreResolved = true;
   try {
     const admin = require('firebase-admin');
     if (admin.apps?.length) {
       firestoreModule = require('firebase-admin/firestore');
+      if (firestoreModule) {
+        console.log('[FIRESTORE] Firestore module loaded');
+        return true;
+      }
     }
-  } catch {
-    // Firestore not available — run in-memory only
+    console.warn('[FIRESTORE] Firebase Admin not yet initialized — Firestore unavailable');
+    return false;
+  } catch (err) {
+    console.warn('[FIRESTORE] Failed to load Firestore module:', err);
+    return false;
   }
+}
+
+export function isFirestoreAvailable(): boolean {
   return firestoreModule !== null;
 }
 
 function getDb(): any {
-  if (!resolveFirestore()) return null;
+  if (!firestoreModule) {
+    if (!initFirestore()) return null;
+  }
   try {
     return firestoreModule.getFirestore();
-  } catch {
+  } catch (err) {
+    console.warn('[FIRESTORE] getFirestore() failed:', err);
     return null;
   }
 }
@@ -37,11 +48,14 @@ export async function loadAllUsers(): Promise<Record<string, any>> {
   const db = getDb();
   if (!db) return {};
   try {
+    console.log('[FIRESTORE] Loading all users...');
     const snap = await db.collection('users').get();
     const map: Record<string, any> = {};
     snap.forEach((doc: any) => { map[doc.id] = doc.data(); });
+    console.log(`[FIRESTORE] Loaded ${Object.keys(map).length} users`);
     return map;
-  } catch {
+  } catch (err) {
+    console.error('[FIRESTORE] loadAllUsers failed:', err);
     return {};
   }
 }
@@ -50,10 +64,16 @@ export async function loadUserById(id: string): Promise<any | null> {
   const db = getDb();
   if (!db) return null;
   try {
+    console.log(`[FIRESTORE] Reading user by ID: ${id.slice(0, 12)}...`);
     const doc = await db.collection('users').doc(id).get();
-    if (!doc.exists) return null;
+    if (!doc.exists) {
+      console.log('[FIRESTORE] User not found');
+      return null;
+    }
+    console.log('[FIRESTORE] User found');
     return doc.data();
-  } catch {
+  } catch (err) {
+    console.error(`[FIRESTORE] loadUserById failed for ${id.slice(0, 12)}:`, err);
     return null;
   }
 }
@@ -62,22 +82,47 @@ export async function loadUserByFirebaseUid(firebaseUid: string): Promise<any | 
   const db = getDb();
   if (!db) return null;
   try {
+    console.log(`[FIRESTORE] Reading user by firebaseUid: ${firebaseUid.slice(0, 12)}...`);
     const snap = await db.collection('users').where('firebaseUid', '==', firebaseUid).limit(1).get();
-    if (snap.empty) return null;
+    if (snap.empty) {
+      console.log('[FIRESTORE] User not found');
+      return null;
+    }
     const doc = snap.docs[0];
+    console.log(`[FIRESTORE] User found: ${doc.id.slice(0, 12)}`);
     return { id: doc.id, ...doc.data() };
-  } catch {
+  } catch (err) {
+    console.error(`[FIRESTORE] loadUserByFirebaseUid failed for ${firebaseUid.slice(0, 12)}:`, err);
     return null;
+  }
+}
+
+export async function createUserDocument(userId: string, data: any): Promise<boolean> {
+  const db = getDb();
+  if (!db) return false;
+  try {
+    console.log('[FIRESTORE] Creating user document...');
+    await db.collection('users').doc(userId).set(data);
+    console.log('[FIRESTORE] User created');
+    return true;
+  } catch (err) {
+    console.error('[FIRESTORE] Save failed:', err);
+    return false;
   }
 }
 
 export async function saveUser(userId: string, data: any): Promise<void> {
   const db = getDb();
-  if (!db) return;
+  if (!db) {
+    console.warn(`[FIRESTORE] FIRESTORE NOT AVAILABLE — user ${userId.slice(0, 12)} NOT persisted`);
+    return;
+  }
   try {
+    console.log(`[FIRESTORE] Saving user ${userId.slice(0, 12)}...`);
     await db.collection('users').doc(userId).set(data, { merge: true });
-  } catch {
-    // silently fail
+    console.log('[FIRESTORE] Save successful');
+  } catch (err) {
+    console.error(`[FIRESTORE] Save failed for user ${userId.slice(0, 12)}:`, err);
   }
 }
 
@@ -87,7 +132,7 @@ export async function deleteUser(userId: string): Promise<void> {
   try {
     await db.collection('users').doc(userId).delete();
   } catch {
-    // silently fail
+    console.warn(`[FIRESTORE] deleteUser failed for ${userId.slice(0, 12)}`);
   }
 }
 
@@ -97,11 +142,14 @@ export async function loadAllWallets(): Promise<Record<string, any>> {
   const db = getDb();
   if (!db) return {};
   try {
+    console.log('[FIRESTORE] Loading all wallets...');
     const snap = await db.collection('wallets').get();
     const map: Record<string, any> = {};
     snap.forEach((doc: any) => { map[doc.id] = doc.data(); });
+    console.log(`[FIRESTORE] Loaded ${Object.keys(map).length} wallets`);
     return map;
-  } catch {
+  } catch (err) {
+    console.error('[FIRESTORE] loadAllWallets failed:', err);
     return {};
   }
 }
@@ -110,9 +158,11 @@ export async function saveWallet(userId: string, wallet: any): Promise<void> {
   const db = getDb();
   if (!db) return;
   try {
+    console.log(`[FIRESTORE] Saving wallet for user ${userId.slice(0, 12)}...`);
     await db.collection('wallets').doc(userId).set(wallet);
-  } catch {
-    // silently fail
+    console.log('[FIRESTORE] Save successful');
+  } catch (err) {
+    console.error(`[FIRESTORE] Save failed for wallet ${userId.slice(0, 12)}:`, err);
   }
 }
 
@@ -122,11 +172,14 @@ export async function loadAllTransactions(): Promise<Record<string, any[]>> {
   const db = getDb();
   if (!db) return {};
   try {
+    console.log('[FIRESTORE] Loading all transactions...');
     const snap = await db.collection('transactions').get();
     const map: Record<string, any[]> = {};
     snap.forEach((doc: any) => { map[doc.id] = doc.data().items || []; });
+    console.log(`[FIRESTORE] Loaded ${Object.keys(map).length} transaction sets`);
     return map;
-  } catch {
+  } catch (err) {
+    console.error('[FIRESTORE] loadAllTransactions failed:', err);
     return {};
   }
 }
@@ -135,9 +188,11 @@ export async function saveTransactions(userId: string, txs: any[]): Promise<void
   const db = getDb();
   if (!db) return;
   try {
+    console.log(`[FIRESTORE] Saving ${txs.length} transactions for user ${userId.slice(0, 12)}...`);
     await db.collection('transactions').doc(userId).set({ items: txs });
-  } catch {
-    // silently fail
+    console.log('[FIRESTORE] Save successful');
+  } catch (err) {
+    console.error(`[FIRESTORE] Save failed for transactions ${userId.slice(0, 12)}:`, err);
   }
 }
 
@@ -147,11 +202,14 @@ export async function loadAllMatchHistory(): Promise<Record<string, any[]>> {
   const db = getDb();
   if (!db) return {};
   try {
+    console.log('[FIRESTORE] Loading all match history...');
     const snap = await db.collection('matchHistory').get();
     const map: Record<string, any[]> = {};
     snap.forEach((doc: any) => { map[doc.id] = doc.data().items || []; });
+    console.log(`[FIRESTORE] Loaded ${Object.keys(map).length} match history sets`);
     return map;
-  } catch {
+  } catch (err) {
+    console.error('[FIRESTORE] loadAllMatchHistory failed:', err);
     return {};
   }
 }
@@ -160,9 +218,11 @@ export async function saveMatchHistory(userId: string, records: any[]): Promise<
   const db = getDb();
   if (!db) return;
   try {
+    console.log(`[FIRESTORE] Saving ${records.length} match records for user ${userId.slice(0, 12)}...`);
     await db.collection('matchHistory').doc(userId).set({ items: records });
-  } catch {
-    // silently fail
+    console.log('[FIRESTORE] Save successful');
+  } catch (err) {
+    console.error(`[FIRESTORE] Save failed for match history ${userId.slice(0, 12)}:`, err);
   }
 }
 
@@ -172,11 +232,14 @@ export async function loadAllDailyRewards(): Promise<Record<string, string>> {
   const db = getDb();
   if (!db) return {};
   try {
+    console.log('[FIRESTORE] Loading all daily rewards...');
     const snap = await db.collection('dailyRewards').get();
     const map: Record<string, string> = {};
     snap.forEach((doc: any) => { map[doc.id] = doc.data().lastClaim; });
+    console.log(`[FIRESTORE] Loaded ${Object.keys(map).length} daily reward states`);
     return map;
-  } catch {
+  } catch (err) {
+    console.error('[FIRESTORE] loadAllDailyRewards failed:', err);
     return {};
   }
 }
@@ -185,12 +248,14 @@ export async function saveDailyReward(userId: string, lastClaim: string): Promis
   const db = getDb();
   if (!db) return;
   try {
+    console.log(`[FIRESTORE] Saving daily reward for user ${userId.slice(0, 12)}...`);
     await db.collection('dailyRewards').doc(userId).set({ lastClaim });
-  } catch {
-    // silently fail
+    console.log('[FIRESTORE] Save successful');
+  } catch (err) {
+    console.error(`[FIRESTORE] Save failed for daily reward ${userId.slice(0, 12)}:`, err);
   }
 }
 
 export function persistenceAvailable(): boolean {
-  return resolveFirestore();
+  return isFirestoreAvailable();
 }

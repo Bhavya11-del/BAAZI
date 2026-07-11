@@ -3,6 +3,14 @@ import jwt from 'jsonwebtoken';
 import { userStore } from './userStore';
 import { socialAuthManager } from './socialAuth';
 
+function decodeJwtPayload(token: string): any {
+  try {
+    const parts = token.split('.');
+    if (parts.length !== 3) return null;
+    return JSON.parse(Buffer.from(parts[1], 'base64').toString('utf-8'));
+  } catch { return null; }
+}
+
 export const authRouter = Router();
 const JWT_SECRET = process.env.JWT_SECRET || 'cardkings-india-secret-2024';
 
@@ -14,45 +22,61 @@ function signToken(userId: string, firebaseUid?: string) {
 
 authRouter.post('/social', async (req: Request, res: Response) => {
   const { provider, token, guestData } = req.body;
+  console.log('[AUTH] POST /social — provider=' + provider + ' hasToken=' + !!token);
+
   if (!provider || !token) {
     return res.status(400).json({ error: 'Missing provider or token' });
   }
-  try {
-    const profile = await socialAuthManager.verify(provider, token);
-    let user = userStore.findByEmailOnly(profile.email);
 
-    // If this was a guest upgrade, merge guest progress into the real account
-    if (guestData && guestData.isGuest) {
-      if (user) {
-        // Existing account — merge guest chips/elo/stats (take the higher values)
-        userStore.updateUser(user.id, {
-          chips: Math.max(user.chips, guestData.chips ?? 0),
-          elo: Math.max(user.elo, guestData.elo ?? 800),
-          highestElo: Math.max(user.highestElo, guestData.highestElo ?? 800),
-          wins: user.wins + (guestData.wins ?? 0),
-          gamesPlayed: user.gamesPlayed + (guestData.gamesPlayed ?? 0),
-          xp: user.xp + (guestData.xp ?? 0),
-          lifetimeEarned: user.lifetimeEarned + (guestData.lifetimeEarned ?? 0),
-          lifetimeSpent: user.lifetimeSpent + (guestData.lifetimeSpent ?? 0),
-        });
-      } else {
-        // New account — carry guest progress forward
-        user = userStore.createSocialUser(profile, guestData);
-      }
-    } else {
-      if (!user) {
-        user = userStore.createSocialUser(profile);
-      } else {
-        userStore.updateUser(user.id, {
-          name: profile.name,
-          avatar: profile.avatar,
-        });
-      }
+  try {
+    // 1. Verify the Firebase ID token
+    const profile = await socialAuthManager.verify(provider, token);
+    const firebaseUid = profile.providerId;
+    console.log(`[AUTH] Firebase UID: ${firebaseUid.slice(0, 16)}...`);
+
+    // 2. Find or create user by firebaseUid (Firestore-first)
+    //    This queries Firestore by firebaseUid; if not found, creates the document.
+    let user = await userStore.findOrCreateSocialUser(profile, guestData);
+    console.log(`[AUTH] Internal User ID: ${user.id.slice(0, 16)}...`);
+    console.log(`[AUTH] Firestore document ID: ${user.id.slice(0, 16)}...`);
+
+    // 3. If this was a guest upgrade, merge guest progress into the real account
+    if (guestData && guestData.isGuest && user) {
+      console.log('[AUTH] Guest upgrade — merging guest data');
+      const updatedUser = userStore.findById(user.id);
+      userStore.updateUser(user.id, {
+        chips: Math.max(updatedUser?.chips ?? user.chips, guestData.chips ?? 0),
+        elo: Math.max(updatedUser?.elo ?? user.elo, guestData.elo ?? 800),
+        highestElo: Math.max(updatedUser?.highestElo ?? user.highestElo, guestData.highestElo ?? 800),
+        wins: (updatedUser?.wins ?? user.wins) + (guestData.wins ?? 0),
+        gamesPlayed: (updatedUser?.gamesPlayed ?? user.gamesPlayed) + (guestData.gamesPlayed ?? 0),
+        xp: (updatedUser?.xp ?? user.xp) + (guestData.xp ?? 0),
+        lifetimeEarned: (updatedUser?.lifetimeEarned ?? user.lifetimeEarned) + (guestData.lifetimeEarned ?? 0),
+        lifetimeSpent: (updatedUser?.lifetimeSpent ?? user.lifetimeSpent) + (guestData.lifetimeSpent ?? 0),
+      });
+      // Re-read the merged user
+      user = userStore.findById(user.id) || user;
     }
 
-    const firebaseUid = provider === 'firebase' ? profile.providerId : undefined;
-    const jwt = signToken(user!.id, firebaseUid);
-    res.json({ token: jwt, user: sanitize(user!) });
+    // 4. Generate JWT with firebaseUid
+    const jwtToken = signToken(user.id, firebaseUid);
+
+    // 5. Verify JWT payload
+    const decodedCheck = decodeJwtPayload(jwtToken);
+    console.log('[AUTH] JWT payload:', JSON.stringify({
+      userId: decodedCheck?.userId?.slice(0, 16) + '...',
+      firebaseUid: decodedCheck?.firebaseUid?.slice(0, 16) + '...' || '(none)',
+    }));
+    console.log('[AUTH] User object:', JSON.stringify({
+      id: user.id.slice(0, 16) + '...',
+      email: user.email,
+      firebaseUid: user.firebaseUid?.slice(0, 16) + '...' || '(none)',
+      elo: user.elo,
+      chips: user.chips,
+    }));
+
+    console.log('[AUTH] Login complete — sending response');
+    res.json({ token: jwtToken, user: sanitize(user) });
   } catch (err: any) {
     const details = {
       message: err.message,

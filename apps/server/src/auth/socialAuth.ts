@@ -19,16 +19,19 @@ class FirebaseProvider implements SocialAuthProvider {
       throw Object.assign(new Error('Firebase Admin is not initialized. Set FIREBASE_PROJECT_ID in apps/server/.env and configure credentials.'), { code: 'app/no-app' });
     }
     const decoded = await getAuth().verifyIdToken(token);
+    console.log('[TRACE FirebaseProvider.verify] decoded token:', JSON.stringify({ uid: decoded.uid, email: decoded.email, name: decoded.name, picture: decoded.picture }, null, 2));
     if (!decoded.email) {
       throw new Error('Firebase account has no email');
     }
-    return {
+    const profile: SocialProfile = {
       provider: 'firebase',
       providerId: decoded.uid,
       email: decoded.email,
       name: decoded.name || decoded.email!.split('@')[0],
       avatar: decoded.picture || `https://api.dicebear.com/7.x/avataaars/svg?seed=${decoded.email}`,
     };
+    console.log('[TRACE FirebaseProvider.verify] returning profile:', JSON.stringify(profile, null, 2));
+    return profile;
   }
 }
 

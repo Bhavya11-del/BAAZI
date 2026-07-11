@@ -210,7 +210,7 @@ class ELO {
     const history = this.matchHistory.get(userId) || [];
     history.push(record);
     this.matchHistory.set(userId, history);
-    saveMatchHistory(userId, history);
+    saveMatchHistory(userId, history).catch(err => console.error(`[FIRESTORE ERROR] saveMatchHistory failed for user=${userId.slice(0,8)}:`, err));
   }
 
   /**
@@ -241,7 +241,7 @@ class ELO {
     const history = this.matchHistory.get(userId) || [];
     history.push(record);
     this.matchHistory.set(userId, history);
-    saveMatchHistory(userId, history);
+    saveMatchHistory(userId, history).catch(err => console.error(`[FIRESTORE ERROR] saveMatchHistory failed for user=${userId.slice(0,8)}:`, err));
   }
 
   /**
@@ -263,7 +263,7 @@ class ELO {
     const history = this.matchHistory.get(userId) || [];
     history.push(record);
     this.matchHistory.set(userId, history);
-    saveMatchHistory(userId, history);
+    saveMatchHistory(userId, history).catch(err => console.error(`[FIRESTORE ERROR] saveMatchHistory failed for user=${userId.slice(0,8)}:`, err));
   }
 }
 

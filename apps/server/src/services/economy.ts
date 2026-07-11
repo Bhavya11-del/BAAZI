@@ -55,9 +55,20 @@ class EconomyService {
   getWallet(userId: string): Wallet {
     let wallet = this.wallets.get(userId);
     if (!wallet) {
-      wallet = { balance: 500, lifetimeEarned: 0, lifetimeSpent: 0 };
+      // Use the user's existing chips from userStore (which may have been set at creation)
+      const user = userStore.findById(userId);
+      const defaultBalance = (user?.chips ?? 500);
+      wallet = {
+        balance: defaultBalance,
+        lifetimeEarned: user?.lifetimeEarned ?? 0,
+        lifetimeSpent: user?.lifetimeSpent ?? 0,
+      };
       this.wallets.set(userId, wallet);
-      this.addTransaction(userId, 'admin_grant', 500, 'Welcome bonus', undefined);
+      // Only add the welcome bonus transaction if this is a genuinely new wallet
+      // (the chips were already initialized in the user document)
+      if (!user || !user.createdAt) {
+        this.addTransaction(userId, 'admin_grant', defaultBalance, 'Welcome bonus', undefined);
+      }
     }
     return wallet;
   }
@@ -100,6 +111,17 @@ class EconomyService {
     this.addTransaction(userId, 'match_win', amount, `Prize from ${game}`, game);
     console.log(`[ECONOMY] Winner payout: user=${userId.slice(0,8)} amount=${amount} game=${game} newBalance=${wallet.balance}`);
     return amount;
+  }
+
+  /**
+   * Record a match_loss transaction in history for a losing player.
+   * Buy-in was already deducted at match start via buy_in transaction.
+   * This entry shows the loss outcome in transaction history without changing balance.
+   */
+  recordMatchLoss(userId: string, buyIn: number, game: string): void {
+    // Use addTransaction with amount=0 so balance doesn't change; history shows the loss
+    this.addTransaction(userId, 'match_loss', 0, `Lost ${buyIn} chips in ${game} (buy-in)`, game);
+    console.log(`[ECONOMY] Match loss recorded: user=${userId.slice(0,8)} buyIn=${buyIn} game=${game}`);
   }
 
   /**
@@ -168,9 +190,9 @@ class EconomyService {
         lifetimeSpent: wallet.lifetimeSpent,
       } as any);
     }
-    // Persist to Firestore
-    saveWallet(userId, wallet);
-    saveTransactions(userId, txs);
+    // Persist to Firestore (with error logging)
+    saveWallet(userId, wallet).catch(err => console.error(`[FIRESTORE ERROR] saveWallet failed for user=${userId.slice(0,8)}:`, err));
+    saveTransactions(userId, txs).catch(err => console.error(`[FIRESTORE ERROR] saveTransactions failed for user=${userId.slice(0,8)}:`, err));
     console.log(`[ECONOMY] Transaction saved: user=${userId.slice(0,8)} type=${type} amount=${amount} balanceBefore=${balanceBefore} balanceAfter=${wallet.balance}`);
     console.log(`[ECONOMY] Wallet saved: user=${userId.slice(0,8)} balance=${wallet.balance} earned=${wallet.lifetimeEarned} spent=${wallet.lifetimeSpent}`);
   }

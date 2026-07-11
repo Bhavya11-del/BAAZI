@@ -12,6 +12,7 @@ import { GameManager } from './games/GameManager';
 import { userStore } from './auth/userStore';
 import { eloService, MIN_ELO, MAX_ELO } from './services/elo';
 import { economyService } from './services/economy';
+import { initFirestore } from './services/persistence';
 
 // safe-load .env in development; in production env vars come from the platform
 try { require('dotenv').config(); } catch { /* dotenv not available */ }
@@ -30,21 +31,29 @@ if (firebaseProjectId) {
         serviceAccount = JSON.parse(Buffer.from(saKey, 'base64').toString('utf-8'));
       }
       initializeApp({ credential: cert(serviceAccount) });
-      console.log('Firebase Admin initialized');
+      console.log('✓ Firebase Admin initialized');
     } else if (saPath) {
       const resolvedPath = path.resolve(saPath);
       const raw = fs.readFileSync(resolvedPath, 'utf-8');
       initializeApp({ credential: cert(JSON.parse(raw)) });
-      console.log('Firebase Admin initialized');
+      console.log('✓ Firebase Admin initialized');
     } else {
       initializeApp({ projectId: firebaseProjectId });
-      console.log('Firebase Admin initialized');
+      console.log('✓ Firebase Admin initialized');
+    }
+
+    // Eagerly initialize Firestore after Firebase Admin
+    const fsReady = initFirestore();
+    if (fsReady) {
+      console.log('✓ Firestore initialized');
+    } else {
+      console.warn('⚠ Firestore not available — running in-memory only');
     }
   } catch (err) {
     console.error('Firebase Admin initialization FAILED:', err);
   }
 } else {
-  console.warn('Firebase Admin not configured — social auth (Google sign-in) will return 401');
+  console.warn('⚠ Firebase Admin not configured — social auth (Google sign-in) will return 401');
 }
 
 const app = express();
